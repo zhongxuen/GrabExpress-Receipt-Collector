@@ -4,43 +4,70 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-This repository currently contains only `instructions.md`, the project spec. No code has been
-written yet. `instructions.md` is the authoritative design doc — read it in full before
-implementing anything, since this file only summarizes the parts needed to get oriented quickly.
+The Next.js app described below has been scaffolded and implemented per `instructions.md` (the
+authoritative design doc — consult it in full for anything not covered by this summary): Google
+sign-in via NextAuth, Gmail search/fetch, GrabExpress HTML parsing, in-memory `.xlsx` export, and
+the single-page UI all exist under `app/` and `lib/`. Typecheck, lint, and `next build` all pass.
+Remaining before production use: real Google OAuth credentials (`GOOGLE_CLIENT_ID`/
+`GOOGLE_CLIENT_SECRET`/`NEXTAUTH_SECRET` in `.env.local` and Vercel), a Vercel deployment, and
+manual testing against a real Gmail inbox with real GrabExpress receipt emails (parsing so far has
+only been verified against a synthetic sample matching the spec's example row).
+
+An earlier version of this project was a local Python CLI tool; it has been superseded by the web
+app design below and the Python implementation was removed from the repo (still recoverable via
+git history if ever needed).
 
 ## What this project is
 
-A local Python CLI tool that authenticates with Gmail via the official Gmail API, finds
-GrabExpress receipt emails, parses receipt data out of the email HTML, and exports the results to
-a formatted `.xlsx` file. No web scraping, no browser automation, no PDF/OCR, no Sheets export,
-no database, no cloud deployment — this stays a local utility.
+A **Next.js web app, deployed on Vercel**, that lets any Gmail user sign in with Google,
+authenticates with Gmail via the official Gmail API, finds GrabExpress receipt emails, parses
+receipt data out of the email HTML, and lets the user download the results as a formatted `.xlsx`
+file. No web scraping, no browser automation, no PDF/OCR, no Sheets export, no database — session
+state lives in an encrypted auth cookie, not a persisted store.
 
 ## Intended architecture
 
-The spec calls for a strict separation of concerns across three modules, each with a single
-responsibility:
+Next.js (App Router) with a strict separation of concerns across `lib/` modules, each with a
+single responsibility:
 
-- **`gmail_client.py`** — OAuth2 authentication, Gmail API search, downloading the raw HTML body
-  of matching messages. Contains no parsing logic.
-- **`receipt_parser.py`** — Takes raw HTML, returns a `Receipt(date, receipt_no, amount)` object.
-  Uses BeautifulSoup + CSS selectors, falling back to regex only where necessary. Must not
-  hardcode element positions, since it needs to tolerate minor HTML layout drift. Designed to be
-  extended with a base parser class so future Grab receipt types (GrabFood, GrabCar, GrabMart)
-  can be added without changing this module's contract — only GrabExpress is implemented now.
-- **`exporter.py`** — Takes a list of `Receipt` objects, writes an `.xlsx` via openpyxl (bold
-  header row, numeric amount column, `YYYY-MM-DD` date formatting, auto column widths).
+- **`lib/gmailClient.ts`** — Given the signed-in user's OAuth access token (from the NextAuth
+  session), search the Gmail API and download the raw HTML body of matching messages. Contains no
+  parsing logic.
+- **`lib/receiptParser.ts`** — Takes raw HTML, returns a `Receipt { date, receiptNo, amount,
+  messageId }` object. Uses `cheerio` + CSS selectors, falling back to regex only where necessary.
+  Must not hardcode element positions, since it needs to tolerate minor HTML layout drift. Designed
+  with a base parser interface so future Grab receipt types (GrabFood, GrabCar, GrabMart) can be
+  added without changing this module's contract — only GrabExpress is implemented now.
+- **`lib/exporter.ts`** — Takes a list of `Receipt` objects, builds an `.xlsx` **in-memory buffer**
+  via `exceljs` (bold header row, numeric amount column, `YYYY-MM-DD` date formatting, auto column
+  widths). No disk writes — Vercel serverless functions have no persistent filesystem.
 
-`main.py` wires these together and owns the CLI. `config.py` holds shared configuration.
+`app/api/export/route.ts` wires these together, runs the search → parse → export pipeline, and
+streams the `.xlsx` buffer back as a file download (`Content-Disposition: attachment`).
+`app/api/auth/[...nextauth]/route.ts` owns Google OAuth via NextAuth.js. `app/page.tsx` is the UI:
+sign-in state, date-range controls, and the export/download action.
 
 Key design points from the spec that aren't obvious from module names alone:
+
 - The Gmail search itself is the date filter (`after:`/`before:` query params) — there's no
   separate in-memory date filtering step.
 - The Booking Code is the Receipt Number. GrabExpress emails don't expose a separate invoice ID.
 - Gmail Message ID should be tracked internally (not exported to the spreadsheet) — it's the
   preferred key for deduplication and is useful for reprocessing/debugging.
-- Deduplicate by Gmail Message ID (preferred) or Booking Code before writing the spreadsheet.
-- Parsing/search failures should be logged and skipped per-message, not fatal to the whole run
-  (e.g. "Skipped: Message ID xxx / Reason: Booking Code not found").
+- Deduplicate by Gmail Message ID (preferred) or Booking Code before building the spreadsheet.
+- Parsing/search failures should be logged and skipped per-message, not fatal to the whole export
+  (e.g. "Skipped: Message ID xxx / Reason: Booking Code not found"), and surfaced back to the UI in
+  the API response — not just server-side logs.
+- Any Gmail user can sign in (multi-user). This is a sensitive-scope (`gmail.readonly`) OAuth app,
+  so the Google consent screen will show an "unverified app" warning / be limited to test users
+  until it passes Google's verification review.
+- There is no `outputs/` folder and no `token.json`/`credentials.json` — those belonged to the old
+  local CLI design. OAuth client ID/secret and the NextAuth secret are environment variables
+  (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `NEXTAUTH_SECRET`), configured in Vercel project
+  settings (and `.env.local` for local dev).
+- Vercel serverless functions have execution time limits — a very large mailbox export running
+  synchronously in one request is a real constraint to keep in mind (see the "Progress Display"
+  suggestion in `instructions.md`).
 
 ## Gmail search query
 
@@ -51,26 +78,26 @@ after:YYYY/MM/DD
 before:YYYY/MM/DD
 ```
 
-The CLI should accept natural-language-ish date args (`--since`, `--month`, `--from`/`--to`, and
-ideally free-form phrases like "last 90 days") and translate them into this query syntax.
+The UI should accept natural-language-ish date inputs (since/month/from-to, and ideally free-form
+phrases like "last 90 days") and translate them into this query syntax.
 
-## CLI shape
+## Web UI shape
 
-```
-python receipts.py                              # all receipts
-python receipts.py --since 2026-06-01
-python receipts.py --month 2026-06
-python receipts.py --from 2026-06-01 --to 2026-06-30
-```
-
-Output filenames follow `grabexpress_receipts[_<range>].xlsx`, written to `outputs/`.
+- Sign in with Google → grants read-only Gmail access.
+- Choose a date range: all time / since a date / a specific month / custom from–to / free-form
+  phrase.
+- Click "Generate spreadsheet" → server runs the pipeline → browser downloads
+  `grabexpress_receipts[_<range>].xlsx`.
+- Skipped/failed messages are shown inline in the response.
 
 ## Auth
 
-OAuth2 via `credentials.json`; token persisted to `token.json` after first browser login so
-subsequent runs don't require re-authentication.
+OAuth2 via Google, configured as a **web application** client type (authorized redirect URI on the
+Vercel domain + localhost for dev) — not the old "Desktop app" client type. NextAuth.js manages the
+session in an encrypted cookie and handles access token refresh using the stored refresh token. No
+local token file, no database.
 
 ## Libraries
 
-`google-api-python-client`, `google-auth`, `google-auth-oauthlib`, `beautifulsoup4`, `lxml`,
-`openpyxl`, `python-dateutil`.
+`next`, `next-auth`, `googleapis`, `cheerio`, `exceljs`, `date-fns` (or `chrono-node` for free-form
+date phrases).

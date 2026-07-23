@@ -1,6 +1,7 @@
-credentials.json
-token.json
-outputs/
-logs/
-__pycache__/
-*.pyc
+.env
+.env.local
+.env*.local
+node_modules/
+.next/
+.vercel/
+*.tsbuildinfo
