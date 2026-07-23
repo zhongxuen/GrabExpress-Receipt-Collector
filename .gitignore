@@ -1,0 +1,6 @@
+credentials.json
+token.json
+outputs/
+logs/
+__pycache__/
+*.pyc
