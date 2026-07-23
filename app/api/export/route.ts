@@ -5,10 +5,20 @@ import { buildGmailQuery, DateRangeInput } from "@/lib/dateFilters";
 import { searchMessages, fetchMessageHtml } from "@/lib/gmailClient";
 import { parseGrabExpressReceipt, ReceiptParseError } from "@/lib/receiptParser";
 import { buildReceiptWorkbook } from "@/lib/exporter";
+import { mapWithConcurrency } from "@/lib/concurrency";
 import type { Receipt, SkippedMessage } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
+
+// Gmail messages are fetched in parallel batches of this size rather than
+// one at a time — sequential fetches don't scale to large mailboxes and
+// risk exceeding maxDuration above.
+const FETCH_CONCURRENCY = 8;
+
+type MessageOutcome =
+  | { kind: "receipt"; receipt: Receipt }
+  | { kind: "skipped"; skipped: SkippedMessage };
 
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions);
@@ -57,37 +67,47 @@ export async function POST(req: NextRequest) {
 
   console.log(`[export] Found ${found.length} matching message(s)`);
 
+  const accessToken = session.accessToken;
+  const outcomes = await mapWithConcurrency(
+    found,
+    FETCH_CONCURRENCY,
+    async ({ messageId }): Promise<MessageOutcome> => {
+      try {
+        const html = await fetchMessageHtml(accessToken, messageId);
+        if (!html) {
+          return { kind: "skipped", skipped: { messageId, reason: "No HTML body found in message" } };
+        }
+        return { kind: "receipt", receipt: parseGrabExpressReceipt(html, messageId) };
+      } catch (err) {
+        const reason =
+          err instanceof ReceiptParseError
+            ? err.message
+            : err instanceof Error
+              ? `Gmail API error: ${err.message}`
+              : "Unexpected error while processing message";
+        console.error(`[export] Skipped message ${messageId}: ${reason}`);
+        return { kind: "skipped", skipped: { messageId, reason } };
+      }
+    }
+  );
+
   const receipts: Receipt[] = [];
   const skipped: SkippedMessage[] = [];
   const seenMessageIds = new Set<string>();
   const seenBookingCodes = new Set<string>();
 
-  for (const { messageId } of found) {
-    try {
-      const html = await fetchMessageHtml(session.accessToken, messageId);
-      if (!html) {
-        skipped.push({ messageId, reason: "No HTML body found in message" });
-        continue;
-      }
-
-      const receipt = parseGrabExpressReceipt(html, messageId);
-
-      if (seenMessageIds.has(receipt.messageId) || seenBookingCodes.has(receipt.receiptNo)) {
-        continue; // duplicate, not a failure — silently deduped per spec
-      }
-      seenMessageIds.add(receipt.messageId);
-      seenBookingCodes.add(receipt.receiptNo);
-      receipts.push(receipt);
-    } catch (err) {
-      const reason =
-        err instanceof ReceiptParseError
-          ? err.message
-          : err instanceof Error
-            ? `Gmail API error: ${err.message}`
-            : "Unexpected error while processing message";
-      console.error(`[export] Skipped message ${messageId}: ${reason}`);
-      skipped.push({ messageId, reason });
+  for (const outcome of outcomes) {
+    if (outcome.kind === "skipped") {
+      skipped.push(outcome.skipped);
+      continue;
     }
+    const { receipt } = outcome;
+    if (seenMessageIds.has(receipt.messageId) || seenBookingCodes.has(receipt.receiptNo)) {
+      continue; // duplicate, not a failure — silently deduped per spec
+    }
+    seenMessageIds.add(receipt.messageId);
+    seenBookingCodes.add(receipt.receiptNo);
+    receipts.push(receipt);
   }
 
   console.log(`[export] Parsed ${receipts.length} receipt(s), skipped ${skipped.length}`);
