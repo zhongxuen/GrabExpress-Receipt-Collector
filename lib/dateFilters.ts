@@ -228,8 +228,11 @@ export function resolveDateRange(input: DateRangeInput, now: Date = new Date()):
   }
 }
 
-export const GRABEXPRESS_SEARCH_BASE =
-  'from:no-reply@grab.com subject:"Your GrabExpress Receipt"';
+// No `from:` filter: real GrabExpress receipts often reach the target mailbox
+// forwarded by whoever booked the delivery, not sent directly by Grab, so
+// filtering on sender silently excludes them. The subject phrase survives
+// forwarding (Gmail just prepends "Fwd:"), so it's the reliable match.
+export const GRABEXPRESS_SEARCH_BASE = 'subject:"Your GrabExpress Receipt"';
 
 export function buildGmailQuery(input: DateRangeInput, now: Date = new Date()): {
   query: string;

@@ -24,6 +24,14 @@ async function listMessagesPage(
   return res.data;
 }
 
+/** The Gmail account the access token is actually authenticated as — useful for
+ * confirming a search is running against the mailbox the caller expects. */
+export async function getAuthenticatedEmail(accessToken: string): Promise<string | undefined> {
+  const gmail = getGmailClient(accessToken);
+  const res = await gmail.users.getProfile({ userId: "me" });
+  return res.data.emailAddress ?? undefined;
+}
+
 /**
  * Searches Gmail for messages matching `query`, following pagination until all
  * results are collected. Returns only message IDs — bodies are fetched separately

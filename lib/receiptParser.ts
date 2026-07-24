@@ -78,8 +78,19 @@ abstract class BaseGrabReceiptParser implements ReceiptParser {
     const stripped = ownText.replace(labelPattern, "").replace(/^[\s:]+|[\s:]+$/g, "");
     if (stripped) return stripped;
 
-    // Otherwise look at sibling elements of the label's container.
-    let sibling = nextElementSibling(container);
+    // Handle "TOTAL <br> <span>RM 7</span>" — label and value share a container,
+    // with the value as a later sibling of the label's own text node.
+    let sibling = nextElementSibling(labelNode);
+    while (sibling) {
+      const siblingText = $(sibling).text().trim();
+      if (siblingText) return siblingText;
+      sibling = nextElementSibling(sibling);
+    }
+
+    // Otherwise look at sibling elements of the label's container (e.g. label
+    // and value are each wrapped in their own element: "<span>Booking code</span>
+    // <br> <span>value</span>").
+    sibling = nextElementSibling(container);
     while (sibling) {
       const siblingText = $(sibling).text().trim();
       if (siblingText) return siblingText;
@@ -155,7 +166,8 @@ export class GrabExpressReceiptParser extends BaseGrabReceiptParser {
   // Grab booking codes look like "A-9GOVVE8GX938AV": a short letter prefix,
   // a dash, then an alphanumeric run.
   private static readonly BOOKING_CODE_RE = /\b[A-Z]-[A-Z0-9]{8,}\b/;
-  private static readonly AMOUNT_RE = /(?:RM|MYR)?\s*([0-9]+(?:,[0-9]{3})*\.[0-9]{2})/i;
+  // Cents are optional: Grab shows whole-ringgit totals as "RM 7", not "RM 7.00".
+  private static readonly AMOUNT_RE = /(?:RM|MYR)?\s*([0-9]+(?:,[0-9]{3})*(?:\.[0-9]{2})?)/i;
 
   parse(html: string, messageId: string): Receipt {
     const { $, text } = this.load(html);

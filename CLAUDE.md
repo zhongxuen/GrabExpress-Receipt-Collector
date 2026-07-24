@@ -72,11 +72,17 @@ Key design points from the spec that aren't obvious from module names alone:
 ## Gmail search query
 
 ```
-from:no-reply@grab.com
 subject:"Your GrabExpress Receipt"
 after:YYYY/MM/DD
 before:YYYY/MM/DD
 ```
+
+No `from:` filter: confirmed against a real inbox that GrabExpress receipts often arrive forwarded
+by whoever booked the delivery rather than sent directly by `no-reply@grab.com`, so filtering on
+sender silently excluded them (this was the root cause of a "0 receipts found" bug — see git log
+for the fix). The subject phrase survives forwarding since Gmail just prepends "Fwd:", so it stays
+a reliable, low-false-positive filter on its own; the parser's field extraction is the backstop
+against any non-receipt email that happens to match.
 
 The UI should accept natural-language-ish date inputs (since/month/from-to, and ideally free-form
 phrases like "last 90 days") and translate them into this query syntax.

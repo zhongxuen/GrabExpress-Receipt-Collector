@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { buildGmailQuery, DateRangeInput } from "@/lib/dateFilters";
-import { searchMessages, fetchMessageHtml } from "@/lib/gmailClient";
+import { searchMessages, fetchMessageHtml, getAuthenticatedEmail } from "@/lib/gmailClient";
 import { parseGrabExpressReceipt, ReceiptParseError } from "@/lib/receiptParser";
 import { buildReceiptWorkbook } from "@/lib/exporter";
 import { mapWithConcurrency } from "@/lib/concurrency";
@@ -52,7 +52,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: message }, { status: 400 });
   }
 
-  console.log(`[export] Gmail search query: ${query}`);
+  const authenticatedEmail = await getAuthenticatedEmail(session.accessToken).catch(() => undefined);
+  console.log(`[export] Authenticated as ${authenticatedEmail ?? "(unknown)"}; query: ${query}`);
 
   let found;
   try {
