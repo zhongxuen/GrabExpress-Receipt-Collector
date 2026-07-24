@@ -47,6 +47,18 @@ function nextElementSibling(node: AnyNode): Element | null {
   return current as Element | null;
 }
 
+// Matches Gmail/Outlook-style forwarded-message headers ("---------- Forwarded
+// message ---------" / "-----Original Message-----"). Gmail puts this marker
+// and the From/Date/Subject/To lines that follow it as sibling text/br nodes
+// inside one wrapping element, alongside the quoted message body.
+const FORWARD_HEADER_RE = /-{2,}\s*(?:forwarded message|original message)\s*-{2,}/i;
+
+// Matches the header field lines that immediately follow a forward marker
+// ("From:", "Date:", "Subject:", "To:", "Sent:", "Cc:"). Used to bound how far
+// stripForwardedHeader walks so it never eats into the quoted body, which can
+// share the same wrapping element as the header.
+const FORWARD_HEADER_FIELD_RE = /^(from|date|subject|to|sent|cc)\s*:/i;
+
 /**
  * Base plumbing shared by all Grab receipt-type parsers: finds the value
  * associated with a label by proximity in the DOM rather than fixed element
@@ -57,8 +69,67 @@ abstract class BaseGrabReceiptParser implements ReceiptParser {
 
   protected load(html: string): { $: cheerio.CheerioAPI; text: string } {
     const $ = cheerio.load(html);
+    this.stripForwardedHeader($);
     const text = $.root().text().replace(/\s+/g, " ").trim();
     return { $, text };
+  }
+
+  /**
+   * Removes a Gmail/Outlook forwarded-message header block, if present, so
+   * its own "Date:"/"From:" lines can't be mistaken for the receipt's actual
+   * label values (e.g. the forward timestamp winning over the delivery date).
+   *
+   * Only the marker line and the header field lines (From/Date/Subject/To/
+   * Sent/Cc) directly following it are removed. The header and the quoted
+   * receipt body are sometimes siblings inside the same wrapping element, so
+   * removing that whole element (as opposed to just the header lines within
+   * it) would delete the real Booking Code/Total/Date too.
+   *
+   * Walking is done one *line* at a time — a line ends at the next `<br>`,
+   * or at the end of the marker's siblings — rather than node by node,
+   * because a header field's value is often split across several sibling
+   * nodes on the same line (e.g. Gmail renders "From: <strong>name</strong>
+   * <span>email</span>"). Judging each node in isolation would see the
+   * `<strong>`/`<span>` value nodes as "not a header field" and stop before
+   * the header (including its own Date line) was fully removed.
+   */
+  private stripForwardedHeader($: cheerio.CheerioAPI): void {
+    const root = $.root().get(0);
+    if (!root) return;
+
+    const markerNode = findTextNode((root.children ?? []) as AnyNode[], FORWARD_HEADER_RE);
+    if (!markerNode) return;
+
+    const toRemove: AnyNode[] = [markerNode];
+    let current: AnyNode | null = markerNode.next;
+    let lineNodes: AnyNode[] = [];
+    let lineText = "";
+
+    while (current) {
+      if (isElement(current) && current.name === "br") {
+        const trimmed = lineText.trim();
+        if (trimmed && !FORWARD_HEADER_FIELD_RE.test(trimmed)) break;
+        toRemove.push(...lineNodes, current);
+        lineNodes = [];
+        lineText = "";
+        current = current.next;
+        continue;
+      }
+
+      lineNodes.push(current);
+      lineText += isText(current) ? current.data : $(current).text();
+      current = current.next;
+    }
+
+    // A trailing line with no terminating <br> (the marker's siblings simply
+    // ran out) is only removed if it still looks like a header field or is
+    // blank — never assume it's safe just because it's the last sibling.
+    const trailingTrimmed = lineText.trim();
+    if (!trailingTrimmed || FORWARD_HEADER_FIELD_RE.test(trailingTrimmed)) {
+      toRemove.push(...lineNodes);
+    }
+
+    $(toRemove).remove();
   }
 
   protected findValueNearLabel(
