@@ -1,6 +1,6 @@
 import * as cheerio from "cheerio";
 import type { AnyNode, Element, Text } from "domhandler";
-import type { Receipt } from "./types";
+import type { Receipt, ReceiptSource } from "./types";
 
 export class ReceiptParseError extends Error {
   constructor(message: string) {
@@ -10,7 +10,12 @@ export class ReceiptParseError extends Error {
 }
 
 export interface ReceiptParser {
-  parse(html: string, messageId: string): Receipt;
+  /**
+   * `fromHeader` is the outer Gmail message's "From" header, when available.
+   * It's the primary signal for Original vs. Forwarded — the in-body forward
+   * marker (if any) is only used as a fallback when the header is missing.
+   */
+  parse(html: string, messageId: string, fromHeader?: string | null): Receipt;
 }
 
 function isElement(node: AnyNode): node is Element {
@@ -65,13 +70,13 @@ const FORWARD_HEADER_FIELD_RE = /^(from|date|subject|to|sent|cc)\s*:/i;
  * positions, so it tolerates minor layout drift in the source HTML.
  */
 abstract class BaseGrabReceiptParser implements ReceiptParser {
-  abstract parse(html: string, messageId: string): Receipt;
+  abstract parse(html: string, messageId: string, fromHeader?: string | null): Receipt;
 
-  protected load(html: string): { $: cheerio.CheerioAPI; text: string } {
+  protected load(html: string): { $: cheerio.CheerioAPI; text: string; hasForwardMarker: boolean } {
     const $ = cheerio.load(html);
-    this.stripForwardedHeader($);
+    const hasForwardMarker = this.stripForwardedHeader($);
     const text = $.root().text().replace(/\s+/g, " ").trim();
-    return { $, text };
+    return { $, text, hasForwardMarker };
   }
 
   /**
@@ -93,12 +98,12 @@ abstract class BaseGrabReceiptParser implements ReceiptParser {
    * `<strong>`/`<span>` value nodes as "not a header field" and stop before
    * the header (including its own Date line) was fully removed.
    */
-  private stripForwardedHeader($: cheerio.CheerioAPI): void {
+  private stripForwardedHeader($: cheerio.CheerioAPI): boolean {
     const root = $.root().get(0);
-    if (!root) return;
+    if (!root) return false;
 
     const markerNode = findTextNode((root.children ?? []) as AnyNode[], FORWARD_HEADER_RE);
-    if (!markerNode) return;
+    if (!markerNode) return false;
 
     const toRemove: AnyNode[] = [markerNode];
     let current: AnyNode | null = markerNode.next;
@@ -130,6 +135,7 @@ abstract class BaseGrabReceiptParser implements ReceiptParser {
     }
 
     $(toRemove).remove();
+    return true;
   }
 
   protected findValueNearLabel(
@@ -198,8 +204,15 @@ function formatDate(year: number, month: number, day: number): string {
   return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
+// Grab's actual production receipts show the date as "24 Jul 26" — a
+// 2-digit year, not "24 Jul 2026" as originally assumed and tested against
+// only a synthetic sample (see md files/grabexpress_receipts_raw.md for real
+// examples). Without the last alternative below, every real receipt's date
+// fails to parse and the whole message gets skipped as "Date not found".
+// The 4-digit-year alternative is tried first, so it always wins when a full
+// year is actually present.
 const DATE_CANDIDATE_RE =
-  /(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})|(\d{4})-(\d{2})-(\d{2})|(\d{1,2})[/-](\d{1,2})[/-](\d{4})/;
+  /(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})\b|(\d{4})-(\d{2})-(\d{2})|(\d{1,2})[/-](\d{1,2})[/-](\d{4})|(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{2})\b/;
 
 function parseDateCandidate(raw: string): string | null {
   const match = DATE_CANDIDATE_RE.exec(raw);
@@ -217,7 +230,34 @@ function parseDateCandidate(raw: string): string | null {
     // day/month/year (Grab's regional format, not month/day/year)
     return formatDate(Number(match[9]), Number(match[8]), Number(match[7]));
   }
+  if (match[10] && match[11] && match[12]) {
+    const month = MONTHS[match[11].toLowerCase()];
+    if (!month) return null;
+    // Grab's 2-digit year is always contemporary (20YY), never 19YY.
+    return formatDate(2000 + Number(match[12]), month, Number(match[10]));
+  }
   return null;
+}
+
+// The only address original (non-forwarded) GrabExpress receipts are ever
+// sent from — see CLAUDE.md and md files/grabexpress_receipts_raw.md.
+const GRAB_SENDER_RE = /no-reply@grab\.com/i;
+
+/**
+ * Determines whether a receipt email is Original or Forwarded.
+ *
+ * The outer Gmail "From" header is the primary signal — it's the actual
+ * envelope sender and can't be spoofed by the message body. It's only
+ * unavailable when the caller couldn't fetch headers, in which case this
+ * falls back to whether a forwarded-message marker was found in the body
+ * (see stripForwardedHeader). Forwarded receipts are still parsed and
+ * included, just flagged, per the project spec — they aren't excluded.
+ */
+function determineSource(fromHeader: string | null | undefined, hasForwardMarker: boolean): ReceiptSource {
+  if (fromHeader) {
+    return GRAB_SENDER_RE.test(fromHeader) ? "Original" : "Forwarded";
+  }
+  return hasForwardMarker ? "Forwarded" : "Original";
 }
 
 /**
@@ -238,16 +278,27 @@ export class GrabExpressReceiptParser extends BaseGrabReceiptParser {
   // a dash, then an alphanumeric run.
   private static readonly BOOKING_CODE_RE = /\b[A-Z]-[A-Z0-9]{8,}\b/;
   // Cents are optional: Grab shows whole-ringgit totals as "RM 7", not "RM 7.00".
+  // The RM/MYR currency prefix is optional here because this pattern is only
+  // ever run against text already scoped to right next to the "Total" label
+  // (see findValueNearLabel) — a bare number there is still trustworthy.
   private static readonly AMOUNT_RE = /(?:RM|MYR)?\s*([0-9]+(?:,[0-9]{3})*(?:\.[0-9]{2})?)/i;
+  // Used only as the whole-document last-resort fallback when the label
+  // can't be located at all. Unlike AMOUNT_RE above, the currency prefix is
+  // REQUIRED here — without it, this would match the first bare digit run
+  // anywhere in the email (tracking IDs, postal codes, booking code digits,
+  // phone numbers...) and silently report a bogus amount instead of failing
+  // loudly with "Amount not found".
+  private static readonly AMOUNT_FALLBACK_RE = /(?:RM|MYR)\s*([0-9]+(?:,[0-9]{3})*(?:\.[0-9]{2})?)/i;
 
-  parse(html: string, messageId: string): Receipt {
-    const { $, text } = this.load(html);
+  parse(html: string, messageId: string, fromHeader?: string | null): Receipt {
+    const { $, text, hasForwardMarker } = this.load(html);
 
     const receiptNo = this.extractBookingCode($, text);
     const amount = this.extractAmount($, text);
     const date = this.extractDate($, text);
+    const source = determineSource(fromHeader, hasForwardMarker);
 
-    return { date, receiptNo, amount, messageId };
+    return { date, receiptNo, amount, source, messageId };
   }
 
   private extractBookingCode($: cheerio.CheerioAPI, text: string): string {
@@ -271,7 +322,7 @@ export class GrabExpressReceiptParser extends BaseGrabReceiptParser {
       if (match) return Number(match[1].replace(/,/g, ""));
     }
 
-    const match = GrabExpressReceiptParser.AMOUNT_RE.exec(text);
+    const match = GrabExpressReceiptParser.AMOUNT_FALLBACK_RE.exec(text);
     if (match) return Number(match[1].replace(/,/g, ""));
 
     throw new ReceiptParseError("Amount not found");
@@ -302,6 +353,6 @@ export function getParserForSubject(subject: string): ReceiptParser {
   throw new ReceiptParseError(`No parser available for subject: "${subject}"`);
 }
 
-export function parseGrabExpressReceipt(html: string, messageId: string): Receipt {
-  return new GrabExpressReceiptParser().parse(html, messageId);
+export function parseGrabExpressReceipt(html: string, messageId: string, fromHeader?: string | null): Receipt {
+  return new GrabExpressReceiptParser().parse(html, messageId, fromHeader);
 }

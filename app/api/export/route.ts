@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { buildGmailQuery, DateRangeInput } from "@/lib/dateFilters";
-import { searchMessages, fetchMessageHtml, getAuthenticatedEmail } from "@/lib/gmailClient";
+import { searchMessages, fetchMessageContent, getAuthenticatedEmail } from "@/lib/gmailClient";
 import { parseGrabExpressReceipt, ReceiptParseError } from "@/lib/receiptParser";
 import { buildReceiptWorkbook } from "@/lib/exporter";
 import { mapWithConcurrency } from "@/lib/concurrency";
@@ -74,11 +74,11 @@ export async function POST(req: NextRequest) {
     FETCH_CONCURRENCY,
     async ({ messageId }): Promise<MessageOutcome> => {
       try {
-        const html = await fetchMessageHtml(accessToken, messageId);
+        const { html, fromHeader } = await fetchMessageContent(accessToken, messageId);
         if (!html) {
           return { kind: "skipped", skipped: { messageId, reason: "No HTML body found in message" } };
         }
-        return { kind: "receipt", receipt: parseGrabExpressReceipt(html, messageId) };
+        return { kind: "receipt", receipt: parseGrabExpressReceipt(html, messageId, fromHeader) };
       } catch (err) {
         const reason =
           err instanceof ReceiptParseError
@@ -111,7 +111,10 @@ export async function POST(req: NextRequest) {
     receipts.push(receipt);
   }
 
-  console.log(`[export] Parsed ${receipts.length} receipt(s), skipped ${skipped.length}`);
+  const forwardedCount = receipts.filter((r) => r.source === "Forwarded").length;
+  console.log(
+    `[export] Parsed ${receipts.length} receipt(s) (${forwardedCount} forwarded), skipped ${skipped.length}`
+  );
 
   const buffer = await buildReceiptWorkbook(receipts);
   const filename = `grabexpress_receipts${filenameLabel ? "_" + filenameLabel : ""}.xlsx`;

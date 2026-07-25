@@ -72,14 +72,30 @@ function decodeBase64Url(data: string): string {
   return Buffer.from(data, "base64url").toString("utf-8");
 }
 
+function getHeader(
+  headers: gmail_v1.Schema$MessagePartHeader[] | undefined,
+  name: string
+): string | null {
+  const found = headers?.find((h) => h.name?.toLowerCase() === name.toLowerCase());
+  return found?.value ?? null;
+}
+
+export interface MessageContent {
+  html: string | null;
+  /** Outer message's "From" header — used to tell Original vs. Forwarded receipts apart. */
+  fromHeader: string | null;
+}
+
 /**
- * Fetches a single message's HTML body. Returns null if the message has no
- * HTML part (caller should treat this as a skip, not a fatal error).
+ * Fetches a single message's HTML body and its "From" header. `html` is null
+ * if the message has no HTML part (caller should treat this as a skip, not a
+ * fatal error). Headers come back on the same `format: "full"` call already
+ * needed for the body, so this adds no extra Gmail API round trip.
  */
-export async function fetchMessageHtml(
+export async function fetchMessageContent(
   accessToken: string,
   messageId: string
-): Promise<string | null> {
+): Promise<MessageContent> {
   const gmail = getGmailClient(accessToken);
   const res = await gmail.users.messages.get({
     userId: "me",
@@ -88,10 +104,11 @@ export async function fetchMessageHtml(
   });
 
   const payload = res.data.payload;
-  if (!payload) return null;
+  if (!payload) return { html: null, fromHeader: null };
 
+  const fromHeader = getHeader(payload.headers, "From");
   const htmlData = findHtmlPart(payload);
-  if (!htmlData) return null;
+  if (!htmlData) return { html: null, fromHeader };
 
-  return decodeBase64Url(htmlData);
+  return { html: decodeBase64Url(htmlData), fromHeader };
 }

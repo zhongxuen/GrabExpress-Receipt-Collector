@@ -14,16 +14,30 @@ export async function buildReceiptWorkbook(receipts: Receipt[]): Promise<Buffer>
     { header: "Date", key: "date", width: 12 },
     { header: "Receipt Number", key: "receiptNo", width: 22 },
     { header: "Amount", key: "amount", width: 12 },
+    { header: "Source", key: "source", width: 12 },
   ];
 
   sheet.getRow(1).font = { bold: true };
 
   for (const receipt of receipts) {
-    sheet.addRow({
+    const row = sheet.addRow({
       date: receipt.date,
       receiptNo: receipt.receiptNo,
       amount: receipt.amount,
+      source: receipt.source,
     });
+
+    // Flag forwarded receipts visually — they're still legitimate GrabExpress
+    // receipts, just relayed through another mailbox rather than sent
+    // directly by no-reply@grab.com, so they're worth a second look.
+    if (receipt.source === "Forwarded") {
+      row.getCell("source").font = { italic: true, color: { argb: "FF9C6500" } };
+      row.getCell("source").fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FFFFF2CC" },
+      };
+    }
   }
 
   const dateColumn = sheet.getColumn("date");
