@@ -11,6 +11,7 @@ import {
   AlertTriangle,
   Inbox,
   FileSpreadsheet,
+  FlaskConical,
 } from "lucide-react";
 import type { DateRangeInput } from "@/lib/dateFilters";
 import type { SkippedMessage } from "@/lib/types";
@@ -32,6 +33,12 @@ const PROGRESS_STEPS = [
   "Building your spreadsheet...",
 ];
 
+const DEMO_PROGRESS_STEPS = [
+  "Loading sample receipts...",
+  "Parsing receipt details...",
+  "Building your spreadsheet...",
+];
+
 function extractFilename(contentDisposition: string | null): string {
   if (!contentDisposition) return "grabexpress_receipts.xlsx";
   const match = /filename="?([^"]+)"?/.exec(contentDisposition);
@@ -41,6 +48,7 @@ function extractFilename(contentDisposition: string | null): string {
 export default function Home() {
   const { data: session, status: sessionStatus } = useSession();
 
+  const [isDemo, setIsDemo] = useState(false);
   const [rangeInput, setRangeInput] = useState<DateRangeInput>({ mode: "all" });
   const [rangeValid, setRangeValid] = useState(true);
 
@@ -56,18 +64,26 @@ export default function Home() {
     };
   }, []);
 
+  // Deep link support for the portfolio site, e.g. "/?demo=1" — lands the
+  // visitor straight in demo mode with zero extra clicks.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("demo") === "1") setIsDemo(true);
+  }, []);
+
   async function handleGenerate() {
     setStatus("loading");
     setErrorMessage("");
     setResultMeta(null);
     setProgressStep(0);
 
+    const steps = isDemo ? DEMO_PROGRESS_STEPS : PROGRESS_STEPS;
     progressTimer.current = setInterval(() => {
-      setProgressStep((s) => Math.min(s + 1, PROGRESS_STEPS.length - 1));
+      setProgressStep((s) => Math.min(s + 1, steps.length - 1));
     }, 2200);
 
     try {
-      const res = await fetch("/api/export", {
+      const res = await fetch(isDemo ? "/api/demo-export" : "/api/export", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(rangeInput),
@@ -121,6 +137,7 @@ export default function Home() {
   }
 
   const isLoading = status === "loading";
+  const progressSteps = isDemo ? DEMO_PROGRESS_STEPS : PROGRESS_STEPS;
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-2xl flex-col gap-6 px-4 py-10 sm:px-6 sm:py-14">
@@ -139,6 +156,25 @@ export default function Home() {
         </p>
       </header>
 
+      {isDemo && (
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted px-3 py-2 text-sm animate-fade-in">
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <FlaskConical className="h-4 w-4 shrink-0" />
+            <span>
+              <span className="font-medium text-foreground">Demo Mode</span> — sample data, not
+              your real inbox.
+            </span>
+          </div>
+          <button
+            type="button"
+            className="shrink-0 text-xs font-medium text-primary hover:underline"
+            onClick={() => setIsDemo(false)}
+          >
+            Exit demo
+          </button>
+        </div>
+      )}
+
       <Card className="animate-fade-in">
         <CardContent className="pt-5 sm:pt-6">
           {sessionStatus === "loading" && (
@@ -148,12 +184,42 @@ export default function Home() {
             </div>
           )}
 
-          {sessionStatus !== "loading" && !session && (
+          {sessionStatus !== "loading" && !session && !isDemo && (
+            <div className="flex flex-col gap-4 py-4">
+              <div className="flex flex-col items-center gap-3 text-center sm:flex-row sm:justify-between sm:text-left">
+                <div>
+                  <p className="font-medium">Not signed in</p>
+                  <p className="text-sm text-muted-foreground">
+                    Grant read-only Gmail access to get started.
+                  </p>
+                </div>
+                <Button className="w-full sm:w-auto" onClick={() => signIn("google")}>
+                  Sign in with Google
+                </Button>
+              </div>
+              <div className="flex flex-col items-center gap-1 border-t border-border pt-4 text-center sm:flex-row sm:justify-between sm:text-left">
+                <p className="text-sm text-muted-foreground">
+                  Just want to see how it works? Try the demo with sample data — no sign-in
+                  required.
+                </p>
+                <Button
+                  variant="outline"
+                  className="w-full shrink-0 sm:w-auto"
+                  onClick={() => setIsDemo(true)}
+                >
+                  <FlaskConical className="h-4 w-4" />
+                  Try the demo
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {sessionStatus !== "loading" && !session && isDemo && (
             <div className="flex flex-col items-center gap-3 py-4 text-center sm:flex-row sm:justify-between sm:text-left">
               <div>
-                <p className="font-medium">Not signed in</p>
+                <p className="font-medium">Viewing the demo</p>
                 <p className="text-sm text-muted-foreground">
-                  Grant read-only Gmail access to get started.
+                  Sign in with Google to run this against your own inbox.
                 </p>
               </div>
               <Button className="w-full sm:w-auto" onClick={() => signIn("google")}>
@@ -177,11 +243,15 @@ export default function Home() {
         </CardContent>
       </Card>
 
-      {session && (
+      {(session || isDemo) && (
         <Card className="animate-fade-in">
           <CardHeader>
             <CardTitle>Export receipts</CardTitle>
-            <CardDescription>Choose which receipts to include in the spreadsheet.</CardDescription>
+            <CardDescription>
+              {isDemo
+                ? "Choose which sample receipts to include in the spreadsheet."
+                : "Choose which receipts to include in the spreadsheet."}
+            </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-5">
             <DateRangePicker
@@ -212,7 +282,7 @@ export default function Home() {
 
             {isLoading && (
               <div className="flex flex-col gap-2 animate-fade-in">
-                {PROGRESS_STEPS.map((step, i) => (
+                {progressSteps.map((step, i) => (
                   <div
                     key={step}
                     className={`flex items-center gap-2 text-sm transition-colors ${

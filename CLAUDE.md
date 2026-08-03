@@ -96,6 +96,20 @@ phrases like "last 90 days") and translate them into this query syntax.
   `grabexpress_receipts[_<range>].xlsx`.
 - Skipped/failed messages are shown inline in the response.
 
+## Demo Mode
+
+Since `gmail.readonly` is a sensitive OAuth scope, real sign-in only works for accounts added as
+Google test users (see `md files/adding-test-users.md`) until the app passes verification — that
+doesn't scale to anonymous portfolio traffic. Demo Mode (see `md files/demo-mode-plan.md`) sidesteps
+this: `app/api/demo-export/route.ts` mirrors `app/api/export/route.ts` but sources input from
+`lib/demoFixtures.ts` (bundled synthetic GrabExpress messages) instead of the Gmail API, requires no
+auth, and runs through the exact same `parseGrabExpressReceipt` → dedupe → `buildReceiptWorkbook`
+pipeline as the real export — it's exercising the real parser/exporter, not a mock. It's rate-limited
+per-IP via `lib/rateLimit.ts` (best-effort in-memory, since it has no auth gate). In `app/page.tsx`,
+signed-out visitors see a "Try the demo" entry point, `isDemo` state switches which API route
+`handleGenerate` posts to, and a persistent "Demo Mode" banner stays visible so it's never ambiguous
+which mode produced a downloaded file. `/?demo=1` deep-links straight into it for the portfolio site.
+
 ## Auth
 
 OAuth2 via Google, configured as a **web application** client type (authorized redirect URI on the
