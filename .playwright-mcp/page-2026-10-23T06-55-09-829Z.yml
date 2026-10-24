@@ -1,7 +1,0 @@
-- generic [ref=f7e1]:
-  - main [ref=f7e2]:
-    - generic [ref=f7e3]:
-      - heading "Grab Receipt Collector" [level=1] [ref=f7e12]
-      - paragraph [ref=f7e13]: Sign in with Google, pick a date range, and download your GrabFood, ride, and GrabExpress receipts as a spreadsheet.
-    - generic [ref=f7e14]: Loading session...
-  - region "Notifications alt+T"

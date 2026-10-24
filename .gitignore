@@ -5,4 +5,5 @@ node_modules/
 .next/
 .vercel/
 *.tsbuildinfo
-/md files.playwright-mcp/
+/md files
+.playwright-mcp/
