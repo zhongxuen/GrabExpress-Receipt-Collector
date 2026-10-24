@@ -8,8 +8,8 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 
 export const metadata: Metadata = {
-  title: "GrabExpress Receipt Collector",
-  description: "Export your GrabExpress receipts from Gmail to a spreadsheet.",
+  title: "Grab Receipt Collector",
+  description: "Export your Grab receipts (GrabFood, rides, GrabExpress) from Gmail to a spreadsheet.",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

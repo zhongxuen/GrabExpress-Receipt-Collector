@@ -2,23 +2,29 @@
  * Bundled sample messages for Demo Mode (see md files/demo-mode-plan.md). Each
  * entry is shaped like what `fetchMessageContent` (lib/gmailClient.ts) would
  * return for a real Gmail message, so `/api/demo-export` can feed them
- * straight into the same `parseGrabExpressReceipt` / `buildReceiptWorkbook`
+ * straight into the same `parseGrabReceipt` / `buildReceiptWorkbook`
  * pipeline the real `/api/export` route uses.
  *
- * The HTML below is modeled on the real GrabExpress receipt structure
- * documented in md files/grabexpress_receipts_raw.md (same label/value
- * layout, same "---------- Forwarded message ---------" wrapper for
- * forwarded mail) but with invented names, emails, booking codes, and
- * amounts — none of this is real user data.
+ * The HTML below is modeled on the real Grab receipt structures documented in
+ * md files/grabexpress_receipts_raw.md and md files/general-grab-receipts-plan.md
+ * (same label/value layouts, same "---------- Forwarded message ---------"
+ * wrapper for forwarded mail) but with invented names, emails, booking codes,
+ * order IDs, restaurants, and amounts — none of this is real user data.
  */
+
+import type { GrabService } from "./types";
 
 export interface DemoFixtureMessage {
   messageId: string;
   /** Used only for local date-range filtering in the demo route — stands in
    * for the internal date Gmail would otherwise filter `after:`/`before:` on. */
   date: string; // YYYY-MM-DD
+  /** Used only for the demo route's service filter — stands in for the
+   * per-service Gmail search clause. The parser still decides from the body. */
+  category: GrabService;
   html: string;
   fromHeader: string | null;
+  subject: string | null;
 }
 
 interface ReceiptBodyOptions {
@@ -155,14 +161,153 @@ ${body}
 </div>`;
 }
 
+function labelBlock(label: string, value: string): string {
+  return `
+                <table border="0" cellspacing="0" cellpadding="0" width="100%">
+                    <tr>
+                        <td align="left" class="tdp5"> <span style="font-size:10px;color:#9e9e9e">${label}</span><br/> <span style="font-size:12px;font-weight:bold">${value}</span> </td>
+                    </tr>
+                </table>`;
+}
+
+interface FoodReceiptOptions {
+  totalDisplay: string; // e.g. "RM 16.50" (delivery) or "MYR 4.56" (dine-in)
+  dateDisplay: string; // e.g. "23 Oct 26 09:57 +0800"
+  /** Delivery shows "Pick-up time:" before the date; dine-in shows the bare date. */
+  pickupPrefix: boolean;
+  /** [label, value] pairs for the Booking Details column, in display order. */
+  details: [string, string][];
+  lineItems: [string, string][]; // [description, "RM 14.50"]
+}
+
+/** Modeled on the GrabFood "Your Grab E-Receipt" template (delivery and
+ * dine-in share it, with different Booking Details labels). */
+function foodReceiptHtml(opts: FoodReceiptOptions): string {
+  const summaryRows = opts.lineItems
+    .map(
+      ([description, amount]) => `
+                    <tr>
+                        <td align="left" class="tdp5" width="15"></td>
+                        <td align="left" class="tdp5"> <span>${description}</span> </td>
+                        <td align="left" class="tdp5"> <span>&nbsp;&nbsp;${amount} </span> </td>
+                        <td align="left" class="tdp5" width="15"></td>
+                    </tr>`
+    )
+    .join("");
+
+  return `
+<table width="600" align="center" border="0" cellspacing="0" cellpadding="0" class="borderPerTab">
+    <tr>
+        <td bgcolor="#ffffff">
+            <table width="100%" border="0" cellspacing="0" cellpadding="0">
+                <tr>
+                    <td align="left" style="color:#00b14f;font-size:20px;font-weight:bold"> Hope you enjoyed your food!</td>
+                </tr>
+            </table>
+            <table width="100%" border="0" cellspacing="0" cellpadding="0">
+                <tr>
+                    <td width="44%" align="left" valign="top" class="produceTdLast">TOTAL<br /> <span style="font-size:28px;font-weight:bold">${opts.totalDisplay}</span></td>
+                    <td width="56%" align="left" valign="top" class="produceTdLast">DATE&nbsp;&nbsp;|&nbsp; TIME<br />${opts.pickupPrefix ? " Pick-up time:" : ""} <span style="font-size:14px;font-weight:bold">${opts.dateDisplay}</span></td>
+                </tr>
+            </table>
+        </td>
+    </tr>
+    <tr>
+        <td bgcolor="#f4f4f4">
+            <table width="100%" border="0" cellspacing="0" cellpadding="0">
+                <tr><td align="left" style="font-size:14px;font-weight:bold">Booking Details</td></tr>
+            </table>${opts.details.map(([label, value]) => labelBlock(label, value)).join("")}
+        </td>
+    </tr>
+    <tr>
+        <td bgcolor="#ffffff">
+            <table width="100%" border="0" cellspacing="0" cellpadding="0">
+                <tr><td align="left" style="font-size:14px;font-weight:bold">Receipt Summary</td></tr>
+            </table>
+            <table border="0" cellspacing="0" cellpadding="0" width="100%">${summaryRows}
+                <tr>
+                    <td align="left" class="tdp5" width="15"></td>
+                    <td align="right" class="tdp5"> <span>TOTAL (INCL. TAX)&nbsp;&nbsp;&nbsp;&nbsp;</span> </td>
+                    <td align="left" class="tdp5"> <span>&nbsp;&nbsp;${opts.totalDisplay}</span> </td>
+                    <td align="left" class="tdp5" width="15"></td>
+                </tr>
+            </table>
+        </td>
+    </tr>
+</table>`;
+}
+
+interface RideReceiptOptions {
+  rideType: string; // e.g. "Standard (JustGrab)"
+  pickedUpOn: string; // e.g. "14 February 2026" — full month, 4-digit year
+  bookingId: string;
+  total: string; // e.g. "18.30" — shown as "RM 18.30" up top, bare in the breakdown
+  fare: string;
+  driver: string;
+  passenger: string;
+  pickup: string;
+  pickupTime: string; // e.g. "11:58AM"
+  dropoff: string;
+  dropoffTime: string;
+  tripSummary: string; // e.g. "11.45 km • 29 mins"
+}
+
+/** Modeled on the newer div-based GrabCar "Your Grab E-Receipt" template. */
+function rideReceiptHtml(opts: RideReceiptOptions): string {
+  return `
+<div style="background-color:#f4f4f4">
+<table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+<tr>
+<td bgcolor="#00b14f">
+<table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+<tr>
+<td align="left" class="sm-p-16" width="1"><div style="color:#fff;white-space:nowrap">${opts.rideType}</div></td>
+<td align="right" class="sm-p-16" width="600"><img alt="Grab" src="https://example.com/logo.png" width="48"></td>
+</tr>
+</table>
+<table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+<tr>
+<td align="left" valign="top" width="312">
+<div class="sm-px-16"><div style="color:#fff;font-size:24px">Hope you enjoyed your ride!</div><div><div style="color:#fff">Picked up on ${opts.pickedUpOn}</div><div style="color:#fff;white-space:nowrap">Booking ID: ${opts.bookingId}</div></div></div>
+</td>
+</tr>
+</table>
+</td>
+</tr>
+<tr>
+<td class="sm-px-16">
+<div><table width="100%" cellpadding="0" cellspacing="0" role="presentation"><tr><td align="left" width="100%">Total Paid</td><td align="right" width="1"><div>RM ${opts.total}</div></td></tr></table></div>
+<div>Receipt issued by the driver <span>${opts.driver}</span>.</div>
+<div>Breakdown</div>
+<table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+<tr><td align="left" width="100%">Fare</td><td align="right">${opts.fare}</td></tr>
+<tr><td align="left" width="100%">Total Paid</td><td align="right">${opts.total}</td></tr>
+</table>
+<div>Passenger</div><div>${opts.passenger}</div>
+<div>Profile</div><div>PERSONAL</div>
+<div><div>Your Trip</div><div>${opts.tripSummary}</div></div>
+<table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+<tr><td valign="top" align="center" width="32"><img alt="pick-up" src="https://example.com/icon_pick_up.png" height="24"><div><div>&#8942;</div><div>&#8942;</div></div></td><td valign="top"><div> ${opts.pickup} </div><div>${opts.pickupTime}</div></td></tr>
+<tr><td valign="top" align="center" width="32"><img alt="drop-off" src="https://example.com/icon_drop_off.png" height="24"></td><td valign="top"><div> ${opts.dropoff} </div><div>${opts.dropoffTime}</div></td></tr>
+</table>
+<div>&copy; Grab 2026</div>
+</td>
+</tr>
+</table>
+</div>`;
+}
+
 const GRAB_SENDER_HEADER = "GrabExpress <no-reply@grab.com>";
+const GRAB_ERECEIPT_SENDER_HEADER = "Grab <no-reply@grab.com>";
 
 export const demoFixtures: DemoFixtureMessage[] = [
   // Original — direct from no-reply@grab.com
   {
     messageId: "demo-msg-001",
     date: "2026-07-15",
+    category: "express",
     fromHeader: GRAB_SENDER_HEADER,
+    subject: "Your GrabExpress Receipt",
     html: receiptBodyHtml({
       totalDisplay: "RM 12",
       dateDisplay: "15 Jul 26",
@@ -178,7 +323,9 @@ export const demoFixtures: DemoFixtureMessage[] = [
   {
     messageId: "demo-msg-002",
     date: "2026-06-05",
+    category: "express",
     fromHeader: GRAB_SENDER_HEADER,
+    subject: "Your GrabExpress Receipt",
     html: receiptBodyHtml({
       totalDisplay: "RM 25",
       dateDisplay: "5 Jun 26",
@@ -194,7 +341,9 @@ export const demoFixtures: DemoFixtureMessage[] = [
   {
     messageId: "demo-msg-003",
     date: "2026-07-20",
+    category: "express",
     fromHeader: "demo.forwarder1@example.com",
+    subject: "Fwd: Your GrabExpress Receipt",
     html: forwardedWrapper(
       "demo.forwarder1@example.com",
       "Mon, 20 Jul 2026, 11:05 am",
@@ -214,7 +363,9 @@ export const demoFixtures: DemoFixtureMessage[] = [
   {
     messageId: "demo-msg-004",
     date: "2026-05-10",
+    category: "express",
     fromHeader: "demo.forwarder2@example.com",
+    subject: "Fwd: Your GrabExpress Receipt",
     html: forwardedWrapper(
       "demo.forwarder2@example.com",
       "Sun, 10 May 2026, 4:45 pm",
@@ -235,7 +386,9 @@ export const demoFixtures: DemoFixtureMessage[] = [
   {
     messageId: "demo-msg-005",
     date: "2026-07-01",
+    category: "express",
     fromHeader: GRAB_SENDER_HEADER,
+    subject: "Your GrabExpress Receipt",
     html: receiptBodyHtml({
       totalDisplay: "RM 10",
       dateDisplay: "1 Jul 26",
@@ -245,6 +398,120 @@ export const demoFixtures: DemoFixtureMessage[] = [
       bookingCode: null,
       pickup: "5, Jalan Kelana Jaya, 47301, Petaling Jaya, Selangor, Malaysia",
       dropoff: "30, Jalan Genting Klang, 53300, Kuala Lumpur, Malaysia",
+    }),
+  },
+  // GrabFood delivery
+  {
+    messageId: "demo-msg-006",
+    date: "2026-07-18",
+    category: "food",
+    fromHeader: GRAB_ERECEIPT_SENDER_HEADER,
+    subject: "Your Grab E-Receipt",
+    html: foodReceiptHtml({
+      totalDisplay: "RM 23.40",
+      dateDisplay: "18 Jul 26 12:41 +0800",
+      pickupPrefix: true,
+      details: [
+        ["Vehicle type:", "GrabFood"],
+        ["Issued to", "Alex Lim"],
+        ["Booking code", "A-8DMQX4TZRW2KLV"],
+        ["Order location:", "Kedai Mee Demo - Bandar Sunway"],
+        ["Delivery location:", "12, Jalan Teknologi 3/4, Bandar Sunway"],
+      ],
+      lineItems: [
+        ["Subtotal", "RM 19.90"],
+        ["Delivery fee", "RM 3.50"],
+      ],
+    }),
+  },
+  // GrabFood delivery fully covered by a voucher — a real RM 0.00 receipt,
+  // exported rather than skipped.
+  {
+    messageId: "demo-msg-007",
+    date: "2026-06-22",
+    category: "food",
+    fromHeader: GRAB_ERECEIPT_SENDER_HEADER,
+    subject: "Your Grab E-Receipt",
+    html: foodReceiptHtml({
+      totalDisplay: "RM 0.00",
+      dateDisplay: "22 Jun 26 18:26 +0800",
+      pickupPrefix: true,
+      details: [
+        ["Vehicle type:", "GrabFood"],
+        ["Issued to", "Priya Nair"],
+        ["Booking code", "A-3VNPQ8KXWD7TMS"],
+        ["Order location:", "Sample Burger Co. - Damansara Utama"],
+        ["Delivery location:", "8, Jalan Damansara Utama 2, Petaling Jaya"],
+      ],
+      lineItems: [
+        ["Subtotal", "RM 15.00"],
+        ["Promotion", "-RM 15.00"],
+      ],
+    }),
+  },
+  // GrabFood dine-in (scan-to-order): MYR prefix, Order ID instead of Booking code
+  {
+    messageId: "demo-msg-008",
+    date: "2026-07-09",
+    category: "food",
+    fromHeader: GRAB_ERECEIPT_SENDER_HEADER,
+    subject: "Your Grab E-Receipt",
+    html: foodReceiptHtml({
+      totalDisplay: "MYR 9.80",
+      dateDisplay: "09 Jul 26 13:05 +0800",
+      pickupPrefix: false,
+      details: [
+        ["Type of order:", "Dine-in"],
+        ["Ordered by", "Sarah Chong"],
+        ["Order ID", "009876543210-C8DEMO7XQ2LM"],
+        ["Restaurant:", "Demo Kopitiam - Subang Jaya"],
+        ["Table number:", "B07"],
+      ],
+      lineItems: [["Subtotal", "MYR 9.80"]],
+    }),
+  },
+  // GrabCar ride (newer div-based template)
+  {
+    messageId: "demo-msg-009",
+    date: "2026-07-02",
+    category: "transport",
+    fromHeader: GRAB_ERECEIPT_SENDER_HEADER,
+    subject: "Your Grab E-Receipt",
+    html: rideReceiptHtml({
+      rideType: "Standard (JustGrab)",
+      pickedUpOn: "2 July 2026",
+      bookingId: "A-9RXDEMOT4KQ2WV",
+      total: "18.30",
+      fare: "18.00",
+      driver: "DEMO DRIVER A",
+      passenger: "David Ong",
+      pickup: "Sunway Pyramid Shopping Mall",
+      pickupTime: "6:42PM",
+      dropoff: "12, Jalan Teknologi 3/4",
+      dropoffTime: "7:05PM",
+      tripSummary: "9.80 km • 23 mins",
+    }),
+  },
+  // GrabCar ride, different product
+  {
+    messageId: "demo-msg-010",
+    date: "2026-05-28",
+    category: "transport",
+    fromHeader: GRAB_ERECEIPT_SENDER_HEADER,
+    subject: "Your Grab E-Receipt",
+    html: rideReceiptHtml({
+      rideType: "Standard | Top-Rated Drivers",
+      pickedUpOn: "28 May 2026",
+      bookingId: "A-7MDEMOQ8ZPXN",
+      total: "11.70",
+      fare: "11.40",
+      driver: "DEMO DRIVER B",
+      passenger: "Farah Aziz",
+      pickup: "KL Sentral Station",
+      pickupTime: "8:15AM",
+      dropoff: "Menara Demo, Jalan Ampang",
+      dropoffTime: "8:31AM",
+      tripSummary: "4.20 km • 16 mins",
     }),
   },
 ];

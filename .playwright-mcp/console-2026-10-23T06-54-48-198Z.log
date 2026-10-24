@@ -1,0 +1,15 @@
+[   20408ms] [INFO] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/compiled/react-dom/cjs/react-dom.development.js:38559
+[   21624ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3001/favicon.ico:0
+[   29340ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/react-dev-overlay/app/hot-reloader-client.js:186
+[   29729ms] [LOG] [Fast Refresh] done in 387ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/react-dev-overlay/app/hot-reloader-client.js:43
+[   30210ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/react-dev-overlay/app/hot-reloader-client.js:186
+[   30780ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/react-dev-overlay/app/hot-reloader-client.js:186
+[   30784ms] [LOG] [Fast Refresh] done in 5ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/react-dev-overlay/app/hot-reloader-client.js:43
+[   31342ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/react-dev-overlay/app/hot-reloader-client.js:186
+[   31569ms] [LOG] [Fast Refresh] done in 227ms @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/react-dev-overlay/app/hot-reloader-client.js:43
+[   32000ms] [LOG] [Fast Refresh] rebuilding @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/react-dev-overlay/app/hot-reloader-client.js:186
+[   33132ms] [LOG] %c%s color: red; background: yellow; font-size: 24px; WARNING! @ https://www.gstatic.com/_/mss/boq-identity/_/js/k=boq-identity.AccountsSignInUi.en.Hv99bHM5rb0.es5.O/am=nw8IAQAAADjCSwAAkACgfwMACBCsA95rAZgAIQMAAAAAAAAAAFwCAFBFAAE/d=1/excm=_b,_tp,accountchooserview/ed=1/dg=0/wt=2/ujg=1/rs=AOaEmlGLq-8zuvtC9_sfd_N9SdrcqDQ4lQ/dti=1/m=_b,_tp:586
+[   33132ms] [LOG] %c%s font-size: 18px; Using this console may allow attackers to impersonate you and steal your information using an attack called Self-XSS.
+Do not enter or paste code that you do not understand. @ https://www.gstatic.com/_/mss/boq-identity/_/js/k=boq-identity.AccountsSignInUi.en.Hv99bHM5rb0.es5.O/am=nw8IAQAAADjCSwAAkACgfwMACBCsA95rAZgAIQMAAAAAAAAAAFwCAFBFAAE/d=1/excm=_b,_tp,accountchooserview/ed=1/dg=0/wt=2/ujg=1/rs=AOaEmlGLq-8zuvtC9_sfd_N9SdrcqDQ4lQ/dti=1/m=_b,_tp:586
+[   34648ms] [WARNING] The powerPreference option is currently ignored when calling requestAdapter() on Windows. See https://crbug.com/369219127 @ :0
+[   35034ms] [WARNING] The powerPreference option is currently ignored when calling requestAdapter() on Windows. See https://crbug.com/369219127 @ :0

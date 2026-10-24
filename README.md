@@ -1,8 +1,8 @@
-# GrabExpress Receipt Collector
+# Grab Receipt Collector
 
-Web app, deployed on Vercel, that lets any Gmail user sign in with Google, finds GrabExpress
-receipt emails, parses receipt data out of the email HTML, and downloads the results as a
-formatted `.xlsx` file.
+Web app, deployed on Vercel, that lets any Gmail user sign in with Google, finds Grab receipt
+emails (GrabFood delivery and dine-in, GrabCar rides, GrabExpress), parses receipt data out of the
+email HTML, and downloads the results as a formatted `.xlsx` file.
 
 See [`instructions.md`](instructions.md) for the full spec and [`CLAUDE.md`](CLAUDE.md) for an
 implementation-oriented summary of the architecture.
@@ -34,8 +34,9 @@ implementation-oriented summary of the architecture.
 1. Open the site, click "Sign in with Google", grant read-only Gmail access.
 2. Pick a date range (all time / since a date / a month / custom range / free-form phrase like
    "last 90 days").
-3. Click "Generate spreadsheet" — the browser downloads
-   `grabexpress_receipts[_<range>].xlsx` once the server finishes processing.
+3. Optionally narrow the services (GrabFood / Rides / GrabExpress — all selected by default).
+4. Click "Generate spreadsheet" — the browser downloads `grab_receipts[_<range>].xlsx` (columns:
+   Date, Receipt Number, Service, Merchant, Pickup, Drop-off, Amount, Source) once the server finishes processing.
 
 Since this app requests the sensitive `gmail.readonly` scope and allows any Google account to sign
 in, the OAuth consent screen will show an "unverified app" warning (or be limited to added test

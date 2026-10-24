@@ -1,4 +1,5 @@
 import * as chrono from "chrono-node";
+import type { GrabService } from "./types";
 
 export type DateRangeMode = "all" | "since" | "month" | "custom" | "phrase";
 
@@ -9,6 +10,13 @@ export interface DateRangeInput {
   from?: string; // YYYY-MM-DD
   to?: string; // YYYY-MM-DD
   phrase?: string;
+}
+
+/** POST body for /api/export and /api/demo-export: the date range plus an
+ * optional service filter. `services` is untrusted, so routes run it through
+ * parseServices rather than reading it directly. */
+export interface ExportRequestBody extends DateRangeInput {
+  services?: unknown;
 }
 
 export interface ResolvedDateRange {
@@ -228,19 +236,74 @@ export function resolveDateRange(input: DateRangeInput, now: Date = new Date()):
   }
 }
 
+export const ALL_GRAB_SERVICES: GrabService[] = ["express", "food", "transport"];
+
+/** Validates the untrusted `services` field of an export request body.
+ * Anything missing or malformed means "all services". */
+export function parseServices(raw: unknown): GrabService[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  return ALL_GRAB_SERVICES.filter((s) => raw.includes(s));
+}
+
+// Per-service Gmail clauses. GrabFood and rides share the subject "Your Grab
+// E-Receipt", so they're told apart by Gmail full-text search on each
+// template's headline. The parser still records the real service from the
+// body, so a mis-match here can only drop a receipt, never mislabel one.
+const SERVICE_CLAUSES: Record<GrabService, string> = {
+  express: 'subject:"Your GrabExpress Receipt"',
+  food: '(subject:"Your Grab E-Receipt" "enjoyed your food")',
+  transport: '(subject:"Your Grab E-Receipt" "enjoyed your ride")',
+};
+
 // No `from:` filter: real GrabExpress receipts often reach the target mailbox
 // forwarded by whoever booked the delivery, not sent directly by Grab, so
-// filtering on sender silently excludes them. The subject phrase survives
-// forwarding (Gmail just prepends "Fwd:"), so it's the reliable match.
-export const GRABEXPRESS_SEARCH_BASE = 'subject:"Your GrabExpress Receipt"';
+// filtering on sender silently excludes them. The subject phrases survive
+// forwarding (Gmail just prepends "Fwd:"), so they're the reliable match.
+export const GRAB_RECEIPT_SEARCH_BASE =
+  '(subject:"Your GrabExpress Receipt" OR subject:"Your Grab E-Receipt")';
 
-export function buildGmailQuery(input: DateRangeInput, now: Date = new Date()): {
+/** The search clause for a set of services. All (or none) selected means the
+ * plain subject union, which also catches any E-Receipt variant whose
+ * headline matches neither the food nor the ride phrase. */
+function serviceClause(services: GrabService[] | undefined): string {
+  const selected = ALL_GRAB_SERVICES.filter((s) => services?.includes(s));
+  if (selected.length === 0 || selected.length === ALL_GRAB_SERVICES.length) {
+    return GRAB_RECEIPT_SEARCH_BASE;
+  }
+  if (selected.length === 1) return SERVICE_CLAUSES[selected[0]];
+  return `(${selected.map((s) => SERVICE_CLAUSES[s]).join(" OR ")})`;
+}
+
+export function buildGmailQuery(
+  input: DateRangeInput,
+  now: Date = new Date(),
+  services?: GrabService[]
+): {
   query: string;
   filenameLabel: string;
 } {
   const { gmailQueryFragment, filenameLabel } = resolveDateRange(input, now);
-  const query = gmailQueryFragment
-    ? `${GRABEXPRESS_SEARCH_BASE} ${gmailQueryFragment}`
-    : GRABEXPRESS_SEARCH_BASE;
+  const base = serviceClause(services);
+  const query = gmailQueryFragment ? `${base} ${gmailQueryFragment}` : base;
   return { query, filenameLabel };
+}
+
+/**
+ * Human-readable date range for the spreadsheet's Summary sheet, derived
+ * from the after:/before: bounds of a Gmail query. Gmail's `before:` is
+ * exclusive, so the shown end date is the day before it.
+ */
+export function describeDateRange(query: string): string {
+  const after = /after:(\d{4})\/(\d{2})\/(\d{2})/.exec(query);
+  const before = /before:(\d{4})\/(\d{2})\/(\d{2})/.exec(query);
+  const from = after ? `${after[1]}-${after[2]}-${after[3]}` : null;
+  let to: string | null = null;
+  if (before) {
+    const end = new Date(Date.UTC(Number(before[1]), Number(before[2]) - 1, Number(before[3]) - 1));
+    to = end.toISOString().slice(0, 10);
+  }
+  if (from && to) return `${from} to ${to}`;
+  if (from) return `Since ${from}`;
+  if (to) return `Up to ${to}`;
+  return "All time";
 }

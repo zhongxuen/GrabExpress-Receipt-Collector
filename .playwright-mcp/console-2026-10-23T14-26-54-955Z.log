@@ -1,0 +1,13 @@
+[    -626ms] [WARNING] MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 Playing listeners added. Use emitter.setMaxListeners() to increase limit
+    at c (https://assets.twitch.tv/assets/68199-5ca46df4ad407e2280e7.js:1:38883)
+    at o.addListener (https://assets.twitch.tv/assets/68199-5ca46df4ad407e2280e7.js:1:41435)
+    at e.on (https://assets.twitch.tv/assets/player-core-variant-b-fcf7a8488c34bbbea447.js:1:130396)
+    at e.addEventListener (https://assets.twitch.tv/assets/player-core-variant-b-fcf7a8488c34bbbea447.js:1:345934)
+    at e.addEventListener (https://assets.twitch.tv/assets/player-core-variant-b-fcf7a8488c34bbbea447.js:1:362917)
+    at o.addEventListener (https://assets.twitch.tv/assets/61456-212faf81181f0aa67830.js:7:216782)
+    at https://assets.twitch.tv/assets/20896-e56bed715a9813534f2c.js:1:1803
+    at iF (https://assets.twitch.tv/assets/74563-35b9ada3ad5fe9c85d26.js:1:482413)
+    at sz (https://assets.twitch.tv/assets/74563-35b9ada3ad5fe9c85d26.js:1:511382)
+    at sT (https://assets.twitch.tv/assets/74563-35b9ada3ad5fe9c85d26.js:1:494262) @ https://assets.twitch.tv/assets/68199-5ca46df4ad407e2280e7.js:0
+[       2ms] [LOG] Amazon IVS Player SDK 1.58.0-rc.1 @ https://assets.twitch.tv/assets/amazon-ivs-wasmworker.min-1da59c3161bea7d07190.js:0
+[       5ms] [LOG] Amazon IVS Player SDK 1.58.0-rc.1 @ https://assets.twitch.tv/assets/amazon-ivs-wasmworker.min-1da59c3161bea7d07190.js:0

@@ -84,10 +84,12 @@ export interface MessageContent {
   html: string | null;
   /** Outer message's "From" header — used to tell Original vs. Forwarded receipts apart. */
   fromHeader: string | null;
+  /** "Subject" header — narrows which receipt parser applies (see parseGrabReceipt). */
+  subject: string | null;
 }
 
 /**
- * Fetches a single message's HTML body and its "From" header. `html` is null
+ * Fetches a single message's HTML body and its "From"/"Subject" headers. `html` is null
  * if the message has no HTML part (caller should treat this as a skip, not a
  * fatal error). Headers come back on the same `format: "full"` call already
  * needed for the body, so this adds no extra Gmail API round trip.
@@ -104,11 +106,12 @@ export async function fetchMessageContent(
   });
 
   const payload = res.data.payload;
-  if (!payload) return { html: null, fromHeader: null };
+  if (!payload) return { html: null, fromHeader: null, subject: null };
 
   const fromHeader = getHeader(payload.headers, "From");
+  const subject = getHeader(payload.headers, "Subject");
   const htmlData = findHtmlPart(payload);
-  if (!htmlData) return { html: null, fromHeader };
+  if (!htmlData) return { html: null, fromHeader, subject };
 
-  return { html: decodeBase64Url(htmlData), fromHeader };
+  return { html: decodeBase64Url(htmlData), fromHeader, subject };
 }

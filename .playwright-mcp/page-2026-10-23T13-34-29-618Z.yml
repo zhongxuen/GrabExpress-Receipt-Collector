@@ -1,0 +1,26 @@
+- generic [ref=f7e2]:
+  - generic [ref=f7e3]:
+    - progressbar [ref=f7e5]
+    - generic [ref=f7e13]:
+      - heading "Google hasn’t verified this app" [level=1] [ref=f7e22]
+      - generic [ref=f7e32]:
+        - text: You’ve been given access to an app that’s currently being tested. You should only continue if you know
+        - button "the developer" [ref=f7e33] [cursor=pointer]
+        - text: that invited you.
+      - generic [ref=f7e35]:
+        - button "Back to safety" [ref=f7e39]
+        - button "Continue" [ref=f7e46]
+  - contentinfo [ref=f7e51]:
+    - combobox "‪English (United States)‬" [ref=f7e55] [cursor=pointer]:
+      - generic [aria-hidden]:
+        - generic: ‪English (United States)‬
+    - list [ref=f7e57]:
+      - listitem [ref=f7e58]:
+        - link "Help" [ref=f7e59] [cursor=pointer]:
+          - /url: https://support.google.com/accounts?hl=en&p=account_iph
+      - listitem [ref=f7e60]:
+        - link "Privacy" [ref=f7e61] [cursor=pointer]:
+          - /url: https://accounts.google.com/TOS?loc=MY&hl=en&privacy=true
+      - listitem [ref=f7e62]:
+        - link "Terms" [ref=f7e63] [cursor=pointer]:
+          - /url: https://accounts.google.com/TOS?loc=MY&hl=en

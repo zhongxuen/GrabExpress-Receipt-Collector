@@ -14,21 +14,29 @@ import {
   FlaskConical,
 } from "lucide-react";
 import type { DateRangeInput } from "@/lib/dateFilters";
-import type { SkippedMessage } from "@/lib/types";
+import type { ExportMeta, GrabService } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { DateRangePicker } from "@/components/date-range-picker";
 
 type Status = "idle" | "loading" | "done" | "error";
 
-interface ResultMeta {
-  totalFound: number;
-  exported: number;
-  skipped: SkippedMessage[];
+const SERVICE_OPTIONS: { key: GrabService; label: string; summaryLabel: (n: number) => string }[] = [
+  { key: "food", label: "GrabFood", summaryLabel: () => "GrabFood" },
+  { key: "transport", label: "Rides", summaryLabel: (n) => (n === 1 ? "ride" : "rides") },
+  { key: "express", label: "GrabExpress", summaryLabel: () => "GrabExpress" },
+];
+
+/** e.g. "50 GrabFood, 45 rides, 2 GrabExpress" — services with no receipts are left out. */
+function describeByService(byService: ExportMeta["byService"] | undefined): string {
+  if (!byService) return "";
+  return SERVICE_OPTIONS.filter((opt) => byService[opt.key] > 0)
+    .map((opt) => `${byService[opt.key]} ${opt.summaryLabel(byService[opt.key])}`)
+    .join(", ");
 }
 
 const PROGRESS_STEPS = [
-  "Searching Gmail for GrabExpress receipts...",
+  "Searching Gmail for Grab receipts...",
   "Parsing receipt details...",
   "Building your spreadsheet...",
 ];
@@ -40,9 +48,9 @@ const DEMO_PROGRESS_STEPS = [
 ];
 
 function extractFilename(contentDisposition: string | null): string {
-  if (!contentDisposition) return "grabexpress_receipts.xlsx";
+  if (!contentDisposition) return "grab_receipts.xlsx";
   const match = /filename="?([^"]+)"?/.exec(contentDisposition);
-  return match?.[1] ?? "grabexpress_receipts.xlsx";
+  return match?.[1] ?? "grab_receipts.xlsx";
 }
 
 export default function Home() {
@@ -51,10 +59,11 @@ export default function Home() {
   const [isDemo, setIsDemo] = useState(false);
   const [rangeInput, setRangeInput] = useState<DateRangeInput>({ mode: "all" });
   const [rangeValid, setRangeValid] = useState(true);
+  const [services, setServices] = useState<GrabService[]>(SERVICE_OPTIONS.map((opt) => opt.key));
 
   const [status, setStatus] = useState<Status>("idle");
   const [errorMessage, setErrorMessage] = useState("");
-  const [resultMeta, setResultMeta] = useState<ResultMeta | null>(null);
+  const [resultMeta, setResultMeta] = useState<ExportMeta | null>(null);
   const [progressStep, setProgressStep] = useState(0);
   const progressTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -86,7 +95,7 @@ export default function Home() {
       const res = await fetch(isDemo ? "/api/demo-export" : "/api/export", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(rangeInput),
+        body: JSON.stringify({ ...rangeInput, services }),
       });
 
       if (!res.ok) {
@@ -99,9 +108,9 @@ export default function Home() {
       }
 
       const metaHeader = res.headers.get("X-Export-Meta");
-      const meta: ResultMeta = metaHeader
+      const meta: ExportMeta = metaHeader
         ? JSON.parse(decodeURIComponent(metaHeader))
-        : { totalFound: 0, exported: 0, skipped: [] };
+        : { totalFound: 0, exported: 0, byService: { express: 0, food: 0, transport: 0 }, skipped: [] };
 
       const filename = extractFilename(res.headers.get("Content-Disposition"));
       const blob = await res.blob();
@@ -118,7 +127,8 @@ export default function Home() {
       setStatus("done");
 
       if (meta.exported > 0) {
-        toast.success(`Exported ${meta.exported} receipt${meta.exported === 1 ? "" : "s"}`, {
+        const breakdown = describeByService(meta.byService);
+        toast.success(`Exported ${meta.exported} receipt${meta.exported === 1 ? "" : "s"}${breakdown ? `: ${breakdown}` : ""}`, {
           description: `${filename} has started downloading.`,
         });
       } else {
@@ -147,12 +157,12 @@ export default function Home() {
             <PackageSearch className="h-5 w-5" />
           </div>
           <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">
-            GrabExpress Receipt Collector
+            Grab Receipt Collector
           </h1>
         </div>
         <p className="text-sm text-muted-foreground sm:text-base">
-          Sign in with Google, pick a date range, and download your GrabExpress receipts as a
-          spreadsheet.
+          Sign in with Google, pick a date range, and download your GrabFood, ride, and
+          GrabExpress receipts as a spreadsheet.
         </p>
       </header>
 
@@ -261,11 +271,42 @@ export default function Home() {
               }}
             />
 
+            <div>
+              <p className="mb-2 text-sm font-medium">Services</p>
+              <div className="flex flex-wrap gap-2" role="group" aria-label="Services">
+                {SERVICE_OPTIONS.map((opt) => {
+                  const selected = services.includes(opt.key);
+                  return (
+                    <Button
+                      key={opt.key}
+                      type="button"
+                      size="sm"
+                      variant={selected ? "default" : "outline"}
+                      aria-pressed={selected}
+                      onClick={() =>
+                        setServices((current) =>
+                          selected ? current.filter((s) => s !== opt.key) : [...current, opt.key]
+                        )
+                      }
+                    >
+                      {opt.label}
+                    </Button>
+                  );
+                })}
+              </div>
+              {services.length === 0 && (
+                <p className="mt-2 flex items-center gap-1.5 text-sm text-destructive animate-fade-in">
+                  <AlertTriangle className="h-4 w-4 shrink-0" />
+                  Pick at least one service.
+                </p>
+              )}
+            </div>
+
             <Button
               size="lg"
               className="w-full"
               onClick={handleGenerate}
-              disabled={!rangeValid || isLoading}
+              disabled={!rangeValid || services.length === 0 || isLoading}
             >
               {isLoading ? (
                 <>
@@ -334,6 +375,11 @@ export default function Home() {
                   receipt(s)
                   {resultMeta.skipped.length > 0 && `, skipped ${resultMeta.skipped.length}`}.
                 </div>
+                {describeByService(resultMeta.byService) && (
+                  <p className="text-xs text-muted-foreground">
+                    {describeByService(resultMeta.byService)}
+                  </p>
+                )}
                 {resultMeta.skipped.length > 0 && (
                   <ul className="max-h-40 overflow-y-auto text-xs text-muted-foreground">
                     {resultMeta.skipped.map((s) => (

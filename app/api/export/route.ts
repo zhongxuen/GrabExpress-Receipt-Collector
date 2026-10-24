@@ -1,15 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { buildGmailQuery, DateRangeInput } from "@/lib/dateFilters";
+import { buildGmailQuery, describeDateRange, parseServices, type ExportRequestBody } from "@/lib/dateFilters";
 import { searchMessages, fetchMessageContent, getAuthenticatedEmail } from "@/lib/gmailClient";
-import { parseGrabExpressReceipt, ReceiptParseError } from "@/lib/receiptParser";
-import { buildReceiptWorkbook } from "@/lib/exporter";
+import { parseGrabReceipt, ReceiptParseError } from "@/lib/receiptParser";
+import { buildReceiptWorkbook, countByService } from "@/lib/exporter";
 import { mapWithConcurrency } from "@/lib/concurrency";
-import type { Receipt, SkippedMessage } from "@/lib/types";
+import type { ExportMeta, Receipt, SkippedMessage } from "@/lib/types";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+// GrabFood/ride receipts push a typical mailbox from a handful of matches to
+// hundreds, so this is well above what a GrabExpress-only export needed.
+export const maxDuration = 300;
 
 // Gmail messages are fetched in parallel batches of this size rather than
 // one at a time — sequential fetches don't scale to large mailboxes and
@@ -36,9 +38,9 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  let dateRangeInput: DateRangeInput;
+  let body: ExportRequestBody;
   try {
-    dateRangeInput = (await req.json()) as DateRangeInput;
+    body = (await req.json()) as ExportRequestBody;
   } catch {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
@@ -46,7 +48,7 @@ export async function POST(req: NextRequest) {
   let query: string;
   let filenameLabel: string;
   try {
-    ({ query, filenameLabel } = buildGmailQuery(dateRangeInput));
+    ({ query, filenameLabel } = buildGmailQuery(body, new Date(), parseServices(body.services)));
   } catch (err) {
     const message = err instanceof Error ? err.message : "Invalid date range";
     return NextResponse.json({ error: message }, { status: 400 });
@@ -74,11 +76,11 @@ export async function POST(req: NextRequest) {
     FETCH_CONCURRENCY,
     async ({ messageId }): Promise<MessageOutcome> => {
       try {
-        const { html, fromHeader } = await fetchMessageContent(accessToken, messageId);
+        const { html, fromHeader, subject } = await fetchMessageContent(accessToken, messageId);
         if (!html) {
           return { kind: "skipped", skipped: { messageId, reason: "No HTML body found in message" } };
         }
-        return { kind: "receipt", receipt: parseGrabExpressReceipt(html, messageId, fromHeader) };
+        return { kind: "receipt", receipt: parseGrabReceipt(html, messageId, fromHeader, subject) };
       } catch (err) {
         const reason =
           err instanceof ReceiptParseError
@@ -116,12 +118,16 @@ export async function POST(req: NextRequest) {
     `[export] Parsed ${receipts.length} receipt(s) (${forwardedCount} forwarded), skipped ${skipped.length}`
   );
 
-  const buffer = await buildReceiptWorkbook(receipts);
-  const filename = `grabexpress_receipts${filenameLabel ? "_" + filenameLabel : ""}.xlsx`;
+  const buffer = await buildReceiptWorkbook(receipts, {
+    rangeLabel: describeDateRange(query),
+    skippedCount: skipped.length,
+  });
+  const filename = `grab_receipts${filenameLabel ? "_" + filenameLabel : ""}.xlsx`;
 
-  const meta = {
+  const meta: ExportMeta = {
     totalFound: found.length,
     exported: receipts.length,
+    byService: countByService(receipts),
     skipped,
   };
 

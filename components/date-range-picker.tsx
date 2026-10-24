@@ -18,7 +18,7 @@ const iso = (d: Date) => format(d, "yyyy-MM-dd");
 /** Turns a Gmail query fragment like "after:2026/07/10 before:2026/07/20" into
  * human-readable text, e.g. "from 10 Jul 2026 to 19 Jul 2026". */
 function describeGmailFragment(fragment: string): string {
-  if (!fragment) return "all GrabExpress receipts";
+  if (!fragment) return "all receipts";
 
   const afterMatch = /after:(\d{4}\/\d{2}\/\d{2})/.exec(fragment);
   const beforeMatch = /before:(\d{4}\/\d{2}\/\d{2})/.exec(fragment);
@@ -33,7 +33,7 @@ function describeGmailFragment(fragment: string): string {
     return `receipts from ${format(after, "d MMM yyyy")} to ${format(before, "d MMM yyyy")}`;
   }
   if (after) return `receipts from ${format(after, "d MMM yyyy")} onward`;
-  return "all GrabExpress receipts";
+  return "all receipts";
 }
 
 function quickInput(key: QuickKey, now: Date): DateRangeInput {

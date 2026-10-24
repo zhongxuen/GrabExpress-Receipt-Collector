@@ -1,0 +1,114 @@
+- generic [ref=f18e1]:
+  - iframe [aria-hidden] [ref=f18e2]
+  - iframe
+  - generic [ref=f18e1745]: None selected
+  - generic [ref=f18e10]:
+    - generic [ref=f18e12]:
+      - generic [ref=f18e13]:
+        - link "Skip to content" [ref=f18e14] [cursor=pointer]:
+          - /url: ""
+        - link "Using Gmail with screen readers" [ref=f18e15] [cursor=pointer]:
+          - /url: ""
+      - heading [level=1] [ref=f18e17]:
+        - banner [ref=f18e18]:
+          - generic [ref=f18e19]:
+            - generic [ref=f18e20]:
+              - button "Main menu" [expanded] [ref=f18e21] [cursor=pointer]
+              - link "Gmail" [ref=f18e26] [cursor=pointer]:
+                - /url: "#inbox"
+            - generic [ref=f18e28]:
+              - search "Search mail" [ref=f18e30]:
+                - heading "Search mail" [level=2] [ref=f18e31]
+                - table [ref=f18e33]:
+                  - rowgroup [ref=f18e34]:
+                    - row [ref=f18e1746]:
+                      - cell [ref=f18e1747]:
+                        - textbox "Search mail" [ref=f18e37]: subject:"Your Grab E-Receipt" MYR after:2026/09/18 before:2026/09/19
+                - button "Advanced search options" [ref=f18e38] [cursor=pointer]
+                - button "Clear search" [ref=f18e41] [cursor=pointer]
+                - button "Search mail" [disabled] [ref=f18e45] [cursor=pointer]
+              - generic [ref=f18e49]:
+                - 'button "Status: Active" [ref=f18e50] [cursor=pointer]'
+                - button "Support" [ref=f18e57] [cursor=pointer]
+                - button "Settings" [ref=f18e62] [cursor=pointer]
+            - generic [ref=f18e67]:
+              - button "Google apps" [ref=f18e71] [cursor=pointer]
+              - 'button "Google Account: Goh Zhong Xuen (gohzx2006@gmail.com), Google membership" [ref=f18e77] [cursor=pointer]'
+      - alert [ref=f18e83]
+    - generic [ref=f18e86]:
+      - navigation [ref=f18e87]:
+        - generic [ref=f18e88]:
+          - link "Mail, 11826 unread messages" [ref=f18e89] [cursor=pointer]:
+            - generic [aria-hidden] [ref=f18e91]: 99+
+          - heading "Mail" [level=2] [ref=f18e92] [cursor=pointer]
+        - generic [ref=f18e93]:
+          - link "Chat, 0 unread messages" [ref=f18e94] [cursor=pointer]
+          - heading "Chat" [level=2] [ref=f18e95] [cursor=pointer]
+        - generic [ref=f18e96]:
+          - link "Meet" [ref=f18e97] [cursor=pointer]
+          - heading "Meet" [level=2] [ref=f18e98] [cursor=pointer]
+      - generic [ref=f18e100]:
+        - button "Compose" [ref=f18e103] [cursor=pointer]
+        - generic [ref=f18e108]:
+          - generic [ref=f18e110]:
+            - heading "Labels" [level=2] [ref=f18e111]
+            - generic [ref=f18e112]:
+              - generic [ref=f18e113]:
+                - generic [ref=f18e115]:
+                  - generic [ref=f18e120]:
+                    - link "Inbox 11826 unread" [ref=f18e122] [cursor=pointer]:
+                      - /url: https://mail.google.com/mail/u/0/#inbox
+                      - text: Inbox
+                    - generic [ref=f18e123]: 11,826
+                  - link "Starred" [ref=f18e130] [cursor=pointer]:
+                    - /url: https://mail.google.com/mail/u/0/#starred
+                  - link "Snoozed" [ref=f18e137] [cursor=pointer]:
+                    - /url: https://mail.google.com/mail/u/0/#snoozed
+                  - link "Important" [ref=f18e144] [cursor=pointer]:
+                    - /url: https://mail.google.com/mail/u/0/#imp
+                  - link "Sent" [ref=f18e151] [cursor=pointer]:
+                    - /url: https://mail.google.com/mail/u/0/#sent
+                  - generic [ref=f18e156]:
+                    - link "Drafts 21 unread" [ref=f18e158] [cursor=pointer]:
+                      - /url: https://mail.google.com/mail/u/0/#drafts
+                      - text: Drafts
+                    - generic [ref=f18e159]: "21"
+                - generic [ref=f18e166]:
+                  - link "Purchases 505 unread has menu" [ref=f18e168] [cursor=pointer]:
+                    - /url: https://mail.google.com/mail/u/0/#category/purchases
+                    - text: Purchases
+                  - generic [ref=f18e169]: "505"
+              - button "More labels" [ref=f18e171] [cursor=pointer]:
+                - generic [ref=f18e172]: More
+          - generic [ref=f18e175]:
+            - heading "Labels" [ref=f18e176]
+            - button "Create new label" [ref=f18e177] [cursor=pointer]
+          - generic:
+            - generic "Labels":
+              - heading "Labels" [level=2] [ref=f18e178]
+      - generic:
+        - generic:
+          - generic:
+            - generic:
+              - iframe
+      - generic [ref=f18e1749]:
+        - generic [ref=f18e1751]:
+          - button [ref=f18e1752] [cursor=pointer]:
+            - generic "Email search results" [ref=f18e1753]: Mail
+          - button [ref=f18e1755] [cursor=pointer]:
+            - generic "Results in direct messages and spaces" [ref=f18e1756]: Conversations
+          - button [ref=f18e1758] [cursor=pointer]:
+            - generic "Spaces matched by name" [ref=f18e1759]: Spaces
+        - generic [ref=f18e1762]:
+          - generic [ref=f18e1763]: Loading Indicator
+          - main [ref=f18e1793]:
+            - generic [ref=f18e1796]:
+              - button "Showing most recent" [ref=f18e1802] [cursor=pointer]
+              - generic [ref=f18e1814]:
+                - button "Input tools on/off (Ctrl-Shift-K)" [ref=f18e1815] [cursor=pointer]
+                - button "Select input tool" [ref=f18e1817] [cursor=pointer]
+            - heading "Conversations" [level=2] [ref=f18e1820]
+      - generic [ref=f18e1695]:
+        - generic:
+          - button "Show side panel":
+            - generic [ref=f18e1696] [cursor=pointer]

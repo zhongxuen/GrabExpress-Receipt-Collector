@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { buildGmailQuery, DateRangeInput } from "@/lib/dateFilters";
-import { parseGrabExpressReceipt, ReceiptParseError } from "@/lib/receiptParser";
-import { buildReceiptWorkbook } from "@/lib/exporter";
+import { ALL_GRAB_SERVICES, buildGmailQuery, describeDateRange, parseServices, type ExportRequestBody } from "@/lib/dateFilters";
+import { parseGrabReceipt, ReceiptParseError } from "@/lib/receiptParser";
+import { buildReceiptWorkbook, countByService } from "@/lib/exporter";
 import { demoFixtures } from "@/lib/demoFixtures";
 import { checkRateLimit } from "@/lib/rateLimit";
-import type { Receipt, SkippedMessage } from "@/lib/types";
+import type { ExportMeta, Receipt, SkippedMessage } from "@/lib/types";
 
 // Publicly callable — no session/auth check. Sources fixture HTML instead of
 // the Gmail API, but otherwise runs the exact same parse -> dedupe -> export
@@ -42,23 +42,28 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  let dateRangeInput: DateRangeInput;
+  let body: ExportRequestBody;
   try {
-    dateRangeInput = (await req.json()) as DateRangeInput;
+    body = (await req.json()) as ExportRequestBody;
   } catch {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
 
   let query: string;
   try {
-    ({ query } = buildGmailQuery(dateRangeInput));
+    ({ query } = buildGmailQuery(body));
   } catch (err) {
     const message = err instanceof Error ? err.message : "Invalid date range";
     return NextResponse.json({ error: message }, { status: 400 });
   }
 
+  // Same "nothing selected means everything" rule buildGmailQuery applies.
+  const requested = parseServices(body.services);
+  const services = requested?.length ? requested : ALL_GRAB_SERVICES;
+
   const { after, before } = parseDateBounds(query);
   const found = demoFixtures.filter((fixture) => {
+    if (!services.includes(fixture.category)) return false;
     const messageDate = new Date(`${fixture.date}T00:00:00`);
     if (after && messageDate < after) return false;
     if (before && messageDate >= before) return false;
@@ -73,7 +78,7 @@ export async function POST(req: NextRequest) {
   for (const message of found) {
     let receipt: Receipt;
     try {
-      receipt = parseGrabExpressReceipt(message.html, message.messageId, message.fromHeader);
+      receipt = parseGrabReceipt(message.html, message.messageId, message.fromHeader, message.subject);
     } catch (err) {
       const reason = err instanceof ReceiptParseError ? err.message : "Unexpected error while processing message";
       skipped.push({ messageId: message.messageId, reason });
@@ -87,14 +92,19 @@ export async function POST(req: NextRequest) {
     receipts.push(receipt);
   }
 
-  const buffer = await buildReceiptWorkbook(receipts);
+  const buffer = await buildReceiptWorkbook(receipts, {
+    rangeLabel: describeDateRange(query),
+    isDemo: true,
+    skippedCount: skipped.length,
+  });
   // Fixed filename (never the real export's name) so a downloads folder can
   // never confuse a demo file for a real one.
-  const filename = "grabexpress_receipts_demo.xlsx";
+  const filename = "grab_receipts_demo.xlsx";
 
-  const meta = {
+  const meta: ExportMeta = {
     totalFound: found.length,
     exported: receipts.length,
+    byService: countByService(receipts),
     skipped,
   };
 

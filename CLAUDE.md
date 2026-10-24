@@ -10,8 +10,8 @@ sign-in via NextAuth, Gmail search/fetch, GrabExpress HTML parsing, in-memory `.
 the single-page UI all exist under `app/` and `lib/`. Typecheck, lint, and `next build` all pass.
 Remaining before production use: real Google OAuth credentials (`GOOGLE_CLIENT_ID`/
 `GOOGLE_CLIENT_SECRET`/`NEXTAUTH_SECRET` in `.env.local` and Vercel), a Vercel deployment, and
-manual testing against a real Gmail inbox with real GrabExpress receipt emails (parsing so far has
-only been verified against a synthetic sample matching the spec's example row).
+manual testing against a real Gmail inbox. Parsing has been verified against real raw (Gmail
+"Show original") receipt HTML for GrabExpress, GrabFood delivery/dine-in, and GrabCar rides.
 
 An earlier version of this project was a local Python CLI tool; it has been superseded by the web
 app design below and the Python implementation was removed from the repo (still recoverable via
@@ -20,7 +20,8 @@ git history if ever needed).
 ## What this project is
 
 A **Next.js web app, deployed on Vercel**, that lets any Gmail user sign in with Google,
-authenticates with Gmail via the official Gmail API, finds GrabExpress receipt emails, parses
+authenticates with Gmail via the official Gmail API, finds Grab receipt emails (GrabFood delivery
+and dine-in, GrabCar rides, and GrabExpress — see `md files/general-grab-receipts-plan.md`), parses
 receipt data out of the email HTML, and lets the user download the results as a formatted `.xlsx`
 file. No web scraping, no browser automation, no PDF/OCR, no Sheets export, no database — session
 state lives in an encrypted auth cookie, not a persisted store.
@@ -34,10 +35,15 @@ single responsibility:
   session), search the Gmail API and download the raw HTML body of matching messages. Contains no
   parsing logic.
 - **`lib/receiptParser.ts`** — Takes raw HTML, returns a `Receipt { date, receiptNo, amount,
-  messageId }` object. Uses `cheerio` + CSS selectors, falling back to regex only where necessary.
-  Must not hardcode element positions, since it needs to tolerate minor HTML layout drift. Designed
-  with a base parser interface so future Grab receipt types (GrabFood, GrabCar, GrabMart) can be
-  added without changing this module's contract — only GrabExpress is implemented now.
+  service, category, merchant?, source, messageId }` object. Uses `cheerio` + label proximity,
+  falling back to regex only where necessary. Must not hardcode element positions, since it needs
+  to tolerate minor HTML layout drift. `BaseGrabReceiptParser` holds the shared plumbing (label
+  lookup, forward-header stripping, space-joined text flattening); `GrabExpressReceiptParser`,
+  `GrabFoodReceiptParser` (delivery + dine-in), and `GrabTransportReceiptParser` (rides) each
+  supply their own label regexes. `parseGrabReceipt(html, messageId, from, subject)` picks the
+  parser (see "Gmail search query" below for why the body, not just the subject, decides).
+  GrabMart/GrabBike/GrabPay payment receipts aren't supported; unrecognised layouts are skipped
+  with a reason rather than misparsed.
 - **`lib/exporter.ts`** — Takes a list of `Receipt` objects, builds an `.xlsx` **in-memory buffer**
   via `exceljs` (bold header row, numeric amount column, `YYYY-MM-DD` date formatting, auto column
   widths). No disk writes — Vercel serverless functions have no persistent filesystem.
@@ -51,7 +57,15 @@ Key design points from the spec that aren't obvious from module names alone:
 
 - The Gmail search itself is the date filter (`after:`/`before:` query params) — there's no
   separate in-memory date filtering step.
-- The Booking Code is the Receipt Number. GrabExpress emails don't expose a separate invoice ID.
+- The Booking Code (GrabExpress, GrabFood delivery) / Booking ID (rides) is the Receipt Number —
+  Grab doesn't expose a separate invoice ID. GrabFood dine-in has no booking code, so its Order ID
+  (`0014…-C8…`) is used instead.
+- Spreadsheet columns: Date | Receipt Number | Service | Merchant | Pickup | Drop-off | Amount (RM) |
+  Source, sorted by date, with a `SUBTOTAL` total row (follows the autofilter) and a formula-driven
+  "Summary" sheet (per-service count/amount, date range, generated-at, demo flag, skipped count).
+  Formatting/auto-width rationale lives in `md files/excel-formatting-plan.md`. Merchant is the restaurant for GrabFood; Pickup/Drop-off are filled for rides only (from
+  the "Your Trip" section, anchored on the `alt="pick-up"`/`alt="drop-off"` icons). GrabExpress
+  addresses are not exported.
 - Gmail Message ID should be tracked internally (not exported to the spreadsheet) — it's the
   preferred key for deduplication and is useful for reprocessing/debugging.
 - Deduplicate by Gmail Message ID (preferred) or Booking Code before building the spreadsheet.
@@ -72,7 +86,7 @@ Key design points from the spec that aren't obvious from module names alone:
 ## Gmail search query
 
 ```
-subject:"Your GrabExpress Receipt"
+(subject:"Your GrabExpress Receipt" OR subject:"Your Grab E-Receipt")
 after:YYYY/MM/DD
 before:YYYY/MM/DD
 ```
@@ -80,9 +94,17 @@ before:YYYY/MM/DD
 No `from:` filter: confirmed against a real inbox that GrabExpress receipts often arrive forwarded
 by whoever booked the delivery rather than sent directly by `no-reply@grab.com`, so filtering on
 sender silently excluded them (this was the root cause of a "0 receipts found" bug — see git log
-for the fix). The subject phrase survives forwarding since Gmail just prepends "Fwd:", so it stays
-a reliable, low-false-positive filter on its own; the parser's field extraction is the backstop
+for the fix). The subject phrases survive forwarding since Gmail just prepends "Fwd:", so they stay
+a reliable, low-false-positive filter on their own; the parser's field extraction is the backstop
 against any non-receipt email that happens to match.
+
+GrabFood and GrabCar rides share the **same** subject, `Your Grab E-Receipt`, with completely
+different HTML (food uses GrabExpress-style label/value tables; rides use a newer div layout). So
+`parseGrabReceipt` dispatches on the body: "enjoyed your ride" → rides, "enjoyed your food" (or
+`Vehicle type:`/`Type of order:` labels) → GrabFood, a GrabExpress subject → GrabExpress, anything
+else → skipped as "Unrecognised Grab E-Receipt layout". The UI's optional service filter narrows
+the Gmail query the same way (`subject:"Your Grab E-Receipt" "enjoyed your food"` etc.) instead of
+filtering after the fetch; with all services selected it uses the plain subject union above.
 
 The UI should accept natural-language-ish date inputs (since/month/from-to, and ideally free-form
 phrases like "last 90 days") and translate them into this query syntax.
@@ -92,9 +114,10 @@ phrases like "last 90 days") and translate them into this query syntax.
 - Sign in with Google → grants read-only Gmail access.
 - Choose a date range: all time / since a date / a specific month / custom from–to / free-form
   phrase.
+- Choose services (GrabFood / Rides / GrabExpress, all on by default).
 - Click "Generate spreadsheet" → server runs the pipeline → browser downloads
-  `grabexpress_receipts[_<range>].xlsx`.
-- Skipped/failed messages are shown inline in the response.
+  `grab_receipts[_<range>].xlsx` (demo: `grab_receipts_demo.xlsx`).
+- The result shows a per-service breakdown; skipped/failed messages are shown inline.
 
 ## Demo Mode
 

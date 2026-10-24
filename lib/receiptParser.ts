@@ -26,6 +26,11 @@ function isText(node: AnyNode): node is Text {
   return node.type === "text";
 }
 
+// Elements whose text is never visible receipt content. Real Grab emails
+// carry large <style> blocks, and CSS text must not be able to satisfy a
+// label search or the whole-document fallback regexes.
+const NON_CONTENT_TAGS = new Set(["style", "script"]);
+
 /**
  * Depth-first search for the first text node whose content matches `pattern`,
  * mirroring BeautifulSoup's `soup.find(string=regex)`.
@@ -35,6 +40,7 @@ function findTextNode(nodes: AnyNode[], pattern: RegExp): Text | null {
     if (isText(node) && pattern.test(node.data)) {
       return node;
     }
+    if (isElement(node) && NON_CONTENT_TAGS.has(node.name)) continue;
     const children = (node as Element).children;
     if (children && children.length) {
       const found = findTextNode(children, pattern);
@@ -42,6 +48,18 @@ function findTextNode(nodes: AnyNode[], pattern: RegExp): Text | null {
     }
   }
   return null;
+}
+
+/** All visible text nodes in document order (skipping <style>/<script>). */
+function collectTextNodes(nodes: AnyNode[], out: Text[] = []): Text[] {
+  for (const node of nodes) {
+    if (isText(node)) {
+      out.push(node);
+    } else if (isElement(node) && !NON_CONTENT_TAGS.has(node.name)) {
+      collectTextNodes(node.children as AnyNode[], out);
+    }
+  }
+  return out;
 }
 
 function nextElementSibling(node: AnyNode): Element | null {
@@ -75,7 +93,16 @@ abstract class BaseGrabReceiptParser implements ReceiptParser {
   protected load(html: string): { $: cheerio.CheerioAPI; text: string; hasForwardMarker: boolean } {
     const $ = cheerio.load(html);
     const hasForwardMarker = this.stripForwardedHeader($);
-    const text = $.root().text().replace(/\s+/g, " ").trim();
+    // Text nodes are joined with a space rather than via `$.root().text()`,
+    // which concatenates adjacent block elements with no separator (e.g.
+    // "<div>Booking ID: A-8VSM8JHGW3KHAV</div><div>Total Paid</div>" becomes
+    // "...KHAVTotal Paid"), defeating the `\b` in the whole-text fallbacks.
+    const root = $.root().get(0);
+    const text = collectTextNodes((root?.children ?? []) as AnyNode[])
+      .map((node) => node.data)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
     return { $, text, hasForwardMarker };
   }
 
@@ -181,7 +208,56 @@ abstract class BaseGrabReceiptParser implements ReceiptParser {
       .trim()
       .replace(labelPattern, "")
       .replace(/^[\s:]+|[\s:]+$/g, "");
-    return parentText || null;
+    if (parentText) return parentText;
+
+    // Last resort: the label sits alone in its own cell and the value is in
+    // the next cell over, e.g. GrabFood's "<td><span>TOTAL (INCL. TAX)</span>
+    // </td><td><span>RM 16.50</span></td>". Climb a few ancestors looking for
+    // a non-empty next sibling.
+    let ancestor: AnyNode | null = container.parent;
+    for (let depth = 0; ancestor && isElement(ancestor) && depth < 2; depth++) {
+      sibling = nextElementSibling(ancestor);
+      while (sibling) {
+        const siblingText = $(sibling).text().trim();
+        if (siblingText) return siblingText;
+        sibling = nextElementSibling(sibling);
+      }
+      ancestor = ancestor.parent;
+    }
+    return null;
+  }
+
+  /**
+   * The full text of the table cell (or, failing that, the element) holding
+   * a label. For layouts where the value shares a cell with the label but
+   * isn't its direct sibling, e.g. GrabFood's "DATE | TIME<br> Pick-up time:
+   * <span>23 Oct 26 09:57 +0800</span>".
+   */
+  protected findContainerText($: cheerio.CheerioAPI, labelPattern: RegExp): string | null {
+    const root = $.root().get(0);
+    if (!root) return null;
+
+    const labelNode = findTextNode((root.children ?? []) as AnyNode[], labelPattern);
+    if (!labelNode || !labelNode.parent || !isElement(labelNode.parent)) return null;
+
+    const parent = $(labelNode.parent);
+    const cell = parent.closest("td");
+    const text = (cell.length ? cell : parent).text().replace(/\s+/g, " ").trim();
+    return text || null;
+  }
+
+  /**
+   * Tries each label in turn and returns the first nearby value matching
+   * `valuePattern` (the whole match, or capture group 1 if present).
+   */
+  protected matchNearLabels($: cheerio.CheerioAPI, labels: RegExp[], valuePattern: RegExp): string | null {
+    for (const label of labels) {
+      const value = this.findValueNearLabel($, label);
+      if (!value) continue;
+      const match = valuePattern.exec(value);
+      if (match) return match[1] ?? match[0];
+    }
+    return null;
   }
 }
 
@@ -239,8 +315,35 @@ function parseDateCandidate(raw: string): string | null {
   return null;
 }
 
-// The only address original (non-forwarded) GrabExpress receipts are ever
-// sent from — see CLAUDE.md and md files/grabexpress_receipts_raw.md.
+// Grab booking codes / booking IDs look like "A-9GOVVE8GX938AV": a short
+// letter prefix, a dash, then an alphanumeric run. Shared by GrabExpress,
+// GrabFood delivery, and rides (older ride IDs are shorter, e.g.
+// "A-6VHNPT9WWG22", which still clears the {8,}).
+const BOOKING_CODE_RE = /\b[A-Z]-[A-Z0-9]{8,}\b/;
+// GrabFood dine-in receipts have no Booking code, only an Order ID like
+// "001490848944-C8E1A6W2FB3AEN". Some merchant-delivered GrabFood orders
+// (e.g. Domino's) also put this shape, with a 9-digit prefix, under the
+// "Booking code" label.
+const ORDER_ID_RE = /\b\d{6,}-[A-Z0-9]{8,}\b/;
+// Cents are optional: Grab shows whole-ringgit totals as "RM 7", not "RM 7.00".
+// The RM/MYR currency prefix is optional here because this pattern is only
+// ever run against text already scoped to right next to the "Total" label
+// (see findValueNearLabel) — a bare number there is still trustworthy.
+const AMOUNT_RE = /(?:RM|MYR)?\s*([0-9]+(?:,[0-9]{3})*(?:\.[0-9]{2})?)/i;
+// Used only as the whole-document last-resort fallback when the label
+// can't be located at all. Unlike AMOUNT_RE above, the currency prefix is
+// REQUIRED here — without it, this would match the first bare digit run
+// anywhere in the email (tracking IDs, postal codes, booking code digits,
+// phone numbers...) and silently report a bogus amount instead of failing
+// loudly with "Amount not found".
+const AMOUNT_FALLBACK_RE = /(?:RM|MYR)\s*([0-9]+(?:,[0-9]{3})*(?:\.[0-9]{2})?)/i;
+
+function parseAmount(raw: string): number {
+  return Number(raw.replace(/,/g, ""));
+}
+
+// The only address original (non-forwarded) Grab receipts are ever sent
+// from — see CLAUDE.md and md files/grabexpress_receipts_raw.md.
 const GRAB_SENDER_RE = /no-reply@grab\.com/i;
 
 /**
@@ -264,31 +367,11 @@ function determineSource(fromHeader: string | null | undefined, hasForwardMarker
  * Parses "Your GrabExpress Receipt" emails. GrabExpress emails don't expose a
  * separate invoice/receipt ID, so the Booking Code is used as the Receipt
  * Number per the project spec.
- *
- * Extension point: future Grab receipt types (GrabFood, GrabCar, GrabMart)
- * should subclass BaseGrabReceiptParser the same way, without changing the
- * ReceiptParser contract callers rely on.
  */
 export class GrabExpressReceiptParser extends BaseGrabReceiptParser {
   private static readonly BOOKING_CODE_LABEL = /booking\s*code/i;
   private static readonly AMOUNT_LABEL = /total(?:\s*(?:paid|amount|fare))?/i;
   private static readonly DATE_LABEL = /\bdate\b/i;
-
-  // Grab booking codes look like "A-9GOVVE8GX938AV": a short letter prefix,
-  // a dash, then an alphanumeric run.
-  private static readonly BOOKING_CODE_RE = /\b[A-Z]-[A-Z0-9]{8,}\b/;
-  // Cents are optional: Grab shows whole-ringgit totals as "RM 7", not "RM 7.00".
-  // The RM/MYR currency prefix is optional here because this pattern is only
-  // ever run against text already scoped to right next to the "Total" label
-  // (see findValueNearLabel) — a bare number there is still trustworthy.
-  private static readonly AMOUNT_RE = /(?:RM|MYR)?\s*([0-9]+(?:,[0-9]{3})*(?:\.[0-9]{2})?)/i;
-  // Used only as the whole-document last-resort fallback when the label
-  // can't be located at all. Unlike AMOUNT_RE above, the currency prefix is
-  // REQUIRED here — without it, this would match the first bare digit run
-  // anywhere in the email (tracking IDs, postal codes, booking code digits,
-  // phone numbers...) and silently report a bogus amount instead of failing
-  // loudly with "Amount not found".
-  private static readonly AMOUNT_FALLBACK_RE = /(?:RM|MYR)\s*([0-9]+(?:,[0-9]{3})*(?:\.[0-9]{2})?)/i;
 
   parse(html: string, messageId: string, fromHeader?: string | null): Receipt {
     const { $, text, hasForwardMarker } = this.load(html);
@@ -298,18 +381,18 @@ export class GrabExpressReceiptParser extends BaseGrabReceiptParser {
     const date = this.extractDate($, text);
     const source = determineSource(fromHeader, hasForwardMarker);
 
-    return { date, receiptNo, amount, source, messageId };
+    return { date, receiptNo, amount, service: "GrabExpress", category: "express", source, messageId };
   }
 
   private extractBookingCode($: cheerio.CheerioAPI, text: string): string {
     const value = this.findValueNearLabel($, GrabExpressReceiptParser.BOOKING_CODE_LABEL);
     if (value) {
-      const match = GrabExpressReceiptParser.BOOKING_CODE_RE.exec(value);
+      const match = BOOKING_CODE_RE.exec(value);
       if (match) return match[0];
       return value;
     }
 
-    const match = GrabExpressReceiptParser.BOOKING_CODE_RE.exec(text);
+    const match = BOOKING_CODE_RE.exec(text);
     if (match) return match[0];
 
     throw new ReceiptParseError("Booking Code not found");
@@ -318,12 +401,12 @@ export class GrabExpressReceiptParser extends BaseGrabReceiptParser {
   private extractAmount($: cheerio.CheerioAPI, text: string): number {
     const value = this.findValueNearLabel($, GrabExpressReceiptParser.AMOUNT_LABEL);
     if (value) {
-      const match = GrabExpressReceiptParser.AMOUNT_RE.exec(value);
-      if (match) return Number(match[1].replace(/,/g, ""));
+      const match = AMOUNT_RE.exec(value);
+      if (match) return parseAmount(match[1]);
     }
 
-    const match = GrabExpressReceiptParser.AMOUNT_FALLBACK_RE.exec(text);
-    if (match) return Number(match[1].replace(/,/g, ""));
+    const match = AMOUNT_FALLBACK_RE.exec(text);
+    if (match) return parseAmount(match[1]);
 
     throw new ReceiptParseError("Amount not found");
   }
@@ -342,17 +425,277 @@ export class GrabExpressReceiptParser extends BaseGrabReceiptParser {
 }
 
 /**
- * Returns the parser for a receipt email subject. Only GrabExpress is
- * implemented; this is the extension point for GrabFood/GrabCar/GrabMart
- * parsers later.
+ * Parses GrabFood "Your Grab E-Receipt" emails: both delivery orders
+ * ("Vehicle type: GrabFood", "Booking code A-…", "Pick-up time: …") and
+ * scan-to-order dine-in ("Type of order: Dine-in", "Order ID 0014…-C8…", no
+ * Booking code). See md files/general-grab-receipts-plan.md templates A/B.
  */
-export function getParserForSubject(subject: string): ReceiptParser {
-  if (subject.toLowerCase().includes("grabexpress")) {
-    return new GrabExpressReceiptParser();
+export class GrabFoodReceiptParser extends BaseGrabReceiptParser {
+  private static readonly BOOKING_CODE_LABEL = /booking\s*code/i;
+  private static readonly ORDER_ID_LABEL = /order\s*id/i;
+  // "TOTAL (INCL. TAX)" in the summary, then the bare header "TOTAL". Both
+  // show the same amount; the anchored header pattern avoids "Subtotal".
+  private static readonly AMOUNT_LABELS = [/total\s*\(incl\.?\s*tax\)/i, /^\s*total\s*$/i];
+  // "DATE | TIME": the value shares the cell but isn't the label's sibling
+  // (delivery adds a "Pick-up time:" prefix), so the whole cell is parsed.
+  private static readonly DATE_LABEL = /date\s*\|\s*time/i;
+  private static readonly VEHICLE_TYPE_LABEL = /^\s*vehicle\s*type\s*:?\s*$/i;
+  private static readonly ORDER_TYPE_LABEL = /^\s*type\s*of\s*order\s*:?\s*$/i;
+  private static readonly MERCHANT_LABELS = [/^\s*order\s*location\s*:?\s*$/i, /^\s*restaurant\s*:?\s*$/i];
+
+  parse(html: string, messageId: string, fromHeader?: string | null): Receipt {
+    const { $, text, hasForwardMarker } = this.load(html);
+
+    const receiptNo = this.extractReceiptNo($, text);
+    const amount = this.extractAmount($, text);
+    const date = this.extractDate($, text);
+    const service = this.extractService($);
+    const merchant = this.extractMerchant($);
+    const source = determineSource(fromHeader, hasForwardMarker);
+
+    return { date, receiptNo, amount, service, category: "food", merchant, source, messageId };
   }
-  throw new ReceiptParseError(`No parser available for subject: "${subject}"`);
+
+  private extractReceiptNo($: cheerio.CheerioAPI, text: string): string {
+    const nearLabel =
+      this.matchNearLabels($, [GrabFoodReceiptParser.BOOKING_CODE_LABEL], BOOKING_CODE_RE) ??
+      this.matchNearLabels(
+        $,
+        [GrabFoodReceiptParser.BOOKING_CODE_LABEL, GrabFoodReceiptParser.ORDER_ID_LABEL],
+        ORDER_ID_RE
+      );
+    if (nearLabel) return nearLabel;
+
+    const match = BOOKING_CODE_RE.exec(text) ?? ORDER_ID_RE.exec(text);
+    if (match) return match[0];
+
+    throw new ReceiptParseError("Booking code / Order ID not found");
+  }
+
+  private extractAmount($: cheerio.CheerioAPI, text: string): number {
+    const value = this.matchNearLabels($, GrabFoodReceiptParser.AMOUNT_LABELS, AMOUNT_RE);
+    if (value) return parseAmount(value);
+
+    const match = AMOUNT_FALLBACK_RE.exec(text);
+    if (match) return parseAmount(match[1]);
+
+    throw new ReceiptParseError("Amount not found");
+  }
+
+  private extractDate($: cheerio.CheerioAPI, text: string): string {
+    const cellText = this.findContainerText($, GrabFoodReceiptParser.DATE_LABEL);
+    const candidates = cellText ? [cellText, text] : [text];
+
+    for (const candidate of candidates) {
+      const parsed = parseDateCandidate(candidate);
+      if (parsed) return parsed;
+    }
+
+    throw new ReceiptParseError("Date not found");
+  }
+
+  /** "GrabFood" for delivery (or whatever "Vehicle type" says, e.g. a
+   * GrabMart order on the same template), "GrabFood (Dine-in)" for dine-in. */
+  private extractService($: cheerio.CheerioAPI): string {
+    const vehicleType = this.findValueNearLabel($, GrabFoodReceiptParser.VEHICLE_TYPE_LABEL);
+    if (vehicleType) return vehicleType;
+
+    const orderType = this.findValueNearLabel($, GrabFoodReceiptParser.ORDER_TYPE_LABEL);
+    if (orderType) return `GrabFood (${orderType})`;
+
+    return "GrabFood";
+  }
+
+  private extractMerchant($: cheerio.CheerioAPI): string | undefined {
+    for (const label of GrabFoodReceiptParser.MERCHANT_LABELS) {
+      const value = this.findValueNearLabel($, label);
+      if (value) return value.replace(/\s+/g, " ");
+    }
+    return undefined;
+  }
 }
 
-export function parseGrabExpressReceipt(html: string, messageId: string, fromHeader?: string | null): Receipt {
-  return new GrabExpressReceiptParser().parse(html, messageId, fromHeader);
+/**
+ * Parses GrabCar ride "Your Grab E-Receipt" emails: a newer div-based layout
+ * with inline "Booking ID: A-…" / "Picked up on 14 February 2026" text and a
+ * two-cell "Total Paid | RM 18.30" row. See md files/general-grab-receipts-plan.md
+ * template C.
+ *
+ * There's deliberately no `/\bdate\b/` label here: the template has no "Date"
+ * label, and the footer's "© Grab 2026" is a trap for loose matching.
+ */
+// Trip stop times in the ride "Your Trip" section, e.g. "11:58AM".
+const TIME_RE = /^\d{1,2}:\d{2}\s*[AP]M$/i;
+
+export class GrabTransportReceiptParser extends BaseGrabReceiptParser {
+  private static readonly BOOKING_ID_LABEL = /booking\s*id/i;
+  private static readonly AMOUNT_LABEL = /^\s*total\s*paid\s*$/i;
+  private static readonly DATE_LABEL = /picked\s*up\s*on/i;
+  private static readonly HEADLINE_RE = /enjoyed\s+your\s+ride/i;
+  private static readonly TRIP_HEADING_RE = /^your\s+trip$/i;
+  private static readonly PICKUP_ICON_RE = /^pick-?\s*up$/i;
+  private static readonly DROPOFF_ICON_RE = /^drop-?\s*off$/i;
+
+  parse(html: string, messageId: string, fromHeader?: string | null): Receipt {
+    const { $, text, hasForwardMarker } = this.load(html);
+
+    const receiptNo = this.extractBookingId($, text);
+    const amount = this.extractAmount($, text);
+    const date = this.extractDate($, text);
+    const service = this.extractService($);
+    const source = determineSource(fromHeader, hasForwardMarker);
+    const { pickup, dropoff } = this.extractTrip($);
+
+    return { date, receiptNo, amount, service, category: "transport", pickup, dropoff, source, messageId };
+  }
+
+  /**
+   * Pickup/drop-off from the "Your Trip" section. Each stop is a table row
+   * whose first cell holds an icon (`alt="pick-up"` / `alt="drop-off"`) and
+   * whose next cell holds the location followed by a time ("11:58AM").
+   * Optional: a receipt without a readable trip section still exports.
+   */
+  private extractTrip($: cheerio.CheerioAPI): { pickup?: string; dropoff?: string } {
+    const pickup = this.findTripStop($, GrabTransportReceiptParser.PICKUP_ICON_RE);
+    const dropoff = this.findTripStop($, GrabTransportReceiptParser.DROPOFF_ICON_RE);
+    if (pickup && dropoff) return { pickup, dropoff };
+
+    // Fallback without the icons: after the "Your Trip" heading, each
+    // location is the line immediately before a time line.
+    const root = $.root().get(0);
+    const lines = collectTextNodes((root?.children ?? []) as AnyNode[])
+      .map((node) => node.data.replace(/\s+/g, " ").trim())
+      .filter((line) => line && line !== "⋮");
+    const start = lines.findIndex((line) => GrabTransportReceiptParser.TRIP_HEADING_RE.test(line));
+    const stops: string[] = [];
+    if (start >= 0) {
+      for (let i = start + 2; i < lines.length && stops.length < 2; i++) {
+        if (TIME_RE.test(lines[i]) && !TIME_RE.test(lines[i - 1])) stops.push(lines[i - 1]);
+      }
+    }
+
+    return { pickup: pickup ?? stops[0], dropoff: dropoff ?? stops[1] };
+  }
+
+  private findTripStop($: cheerio.CheerioAPI, iconAlt: RegExp): string | undefined {
+    const icon = $("img")
+      .filter((_, el) => iconAlt.test($(el).attr("alt") ?? ""))
+      .first();
+    if (!icon.length) return undefined;
+
+    const iconCell = icon.closest("td");
+    const detailCell = iconCell.nextAll("td").first();
+    if (!detailCell.length) return undefined;
+
+    const location = collectTextNodes(detailCell.get().flatMap((el) => el.children as AnyNode[]))
+      .map((node) => node.data.replace(/\s+/g, " ").trim())
+      .filter((line) => line && !TIME_RE.test(line))
+      .join(" ");
+    return location || undefined;
+  }
+
+  private extractBookingId($: cheerio.CheerioAPI, text: string): string {
+    const value = this.matchNearLabels($, [GrabTransportReceiptParser.BOOKING_ID_LABEL], BOOKING_CODE_RE);
+    if (value) return value;
+
+    const match = BOOKING_CODE_RE.exec(text);
+    if (match) return match[0];
+
+    throw new ReceiptParseError("Booking ID not found");
+  }
+
+  private extractAmount($: cheerio.CheerioAPI, text: string): number {
+    // The first "Total Paid" is the headline "RM 18.30"; a second one in the
+    // fare breakdown repeats the number without the currency.
+    const value = this.matchNearLabels($, [GrabTransportReceiptParser.AMOUNT_LABEL], AMOUNT_RE);
+    if (value) return parseAmount(value);
+
+    const match = AMOUNT_FALLBACK_RE.exec(text);
+    if (match) return parseAmount(match[1]);
+
+    throw new ReceiptParseError("Amount not found");
+  }
+
+  private extractDate($: cheerio.CheerioAPI, text: string): string {
+    const value = this.findValueNearLabel($, GrabTransportReceiptParser.DATE_LABEL);
+    if (value) {
+      const parsed = parseDateCandidate(value);
+      if (parsed) return parsed;
+    }
+
+    // Whole-text fallback, still anchored on "Picked up on" so the footer's
+    // copyright year can't be picked up instead.
+    const anchored = /picked\s*up\s*on\s+(.{1,40})/i.exec(text);
+    const parsed = anchored ? parseDateCandidate(anchored[1]) : null;
+    if (parsed) return parsed;
+
+    throw new ReceiptParseError("Date not found");
+  }
+
+  /**
+   * The ride product ("Standard (JustGrab)", "JustGrab", "Standard |
+   * Top-Rated Drivers") is the short unlabelled line just above the "Hope you
+   * enjoyed your ride!" headline. Falls back to plain "GrabCar".
+   */
+  private extractService($: cheerio.CheerioAPI): string {
+    const root = $.root().get(0);
+    const lines = collectTextNodes((root?.children ?? []) as AnyNode[])
+      .map((node) => node.data.replace(/\s+/g, " ").trim())
+      .filter(Boolean);
+
+    const headlineIndex = lines.findIndex((line) => GrabTransportReceiptParser.HEADLINE_RE.test(line));
+    const rideType = headlineIndex > 0 ? lines[headlineIndex - 1] : null;
+    if (!rideType || rideType.length > 60) return "GrabCar";
+
+    return /^grab/i.test(rideType) ? rideType : `GrabCar – ${rideType}`;
+  }
+}
+
+// Body signatures used to pick a parser. Food and rides share the subject
+// "Your Grab E-Receipt", so the body is what actually decides.
+const RIDE_SIGNATURE_RE = /enjoyed\s+your\s+ride|booking\s*id\s*:[\s\S]*picked\s*up\s*on/i;
+const FOOD_HEADLINE_RE = /enjoyed\s+your\s+food/i;
+const FOOD_LABEL_RE = /vehicle\s*type\s*:|type\s*of\s*order\s*:/i;
+const EXPRESS_HEADLINE_RE = /your\s+item\s+has\s+been\s+delivered/i;
+
+/**
+ * Picks the parser for a Grab receipt email.
+ *
+ * The subject only narrows the choice: "GrabExpress" goes straight to the
+ * GrabExpress parser, while "Grab E-Receipt" covers both food and rides, so
+ * the body is sniffed. Forwarded mail still works since a "Fwd:" subject
+ * keeps the phrase. Unknown layouts throw, so a new variant (GrabMart,
+ * GrabBike, …) shows up in the skipped list instead of being misparsed.
+ */
+export function getParserFor(html: string, subject?: string | null): ReceiptParser {
+  const subjectLower = subject?.toLowerCase() ?? "";
+
+  if (subjectLower.includes("grabexpress")) {
+    return new GrabExpressReceiptParser();
+  }
+
+  if (RIDE_SIGNATURE_RE.test(html)) return new GrabTransportReceiptParser();
+  if (FOOD_HEADLINE_RE.test(html)) return new GrabFoodReceiptParser();
+
+  if (subjectLower.includes("grab e-receipt")) {
+    if (FOOD_LABEL_RE.test(html)) return new GrabFoodReceiptParser();
+    throw new ReceiptParseError("Unrecognised Grab E-Receipt layout");
+  }
+
+  // No usable subject (headers missing): rely on the body alone. The
+  // GrabExpress headline is checked before the food labels because
+  // GrabExpress receipts also carry a "Vehicle type" field.
+  if (EXPRESS_HEADLINE_RE.test(html)) return new GrabExpressReceiptParser();
+  if (FOOD_LABEL_RE.test(html)) return new GrabFoodReceiptParser();
+
+  throw new ReceiptParseError("Unrecognised Grab receipt layout");
+}
+
+export function parseGrabReceipt(
+  html: string,
+  messageId: string,
+  fromHeader?: string | null,
+  subject?: string | null
+): Receipt {
+  return getParserFor(html, subject).parse(html, messageId, fromHeader);
 }

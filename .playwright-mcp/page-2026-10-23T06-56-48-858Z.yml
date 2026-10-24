@@ -1,0 +1,48 @@
+- generic [ref=f13e1]:
+  - iframe [aria-hidden] [ref=f13e2]
+  - iframe
+  - generic [ref=f13e3]:
+    - generic [ref=f13e5]:
+      - img "Gmail" [ref=f13e8]
+      - img "Google Workspace" [ref=f13e11]
+    - generic [ref=f13e12]:
+      - text: If you're having trouble loading, visit the
+      - link "Gmail help center" [ref=f13e13] [cursor=pointer]:
+        - /url: https://support.google.com/mail?p=fix-gmail-loading&authuser=0
+      - text: .
+  - generic [ref=f13e21]:
+    - generic [ref=f13e23]:
+      - generic [ref=f13e24]:
+        - link "Skip to content" [ref=f13e25] [cursor=pointer]:
+          - /url: ""
+        - link "Using Gmail with screen readers" [ref=f13e26] [cursor=pointer]:
+          - /url: ""
+      - heading [level=1] [ref=f13e28]:
+        - banner [ref=f13e29]:
+          - generic [ref=f13e30]:
+            - generic [ref=f13e31]:
+              - button "Main menu" [expanded] [ref=f13e32] [cursor=pointer]
+              - link "Gmail" [ref=f13e37] [cursor=pointer]:
+                - /url: "#inbox"
+            - generic [ref=f13e39]:
+              - search [ref=f13e41]:
+                - combobox "Search all conversations" [ref=f13e43]
+                - button [ref=f13e44] [cursor=pointer]
+                - button "Search all conversations" [ref=f13e46] [cursor=pointer]
+              - generic [ref=f13e50]:
+                - button [ref=f13e51] [cursor=pointer]
+                - button [ref=f13e53] [cursor=pointer]
+            - generic [ref=f13e56]:
+              - button "Google apps" [ref=f13e60] [cursor=pointer]
+              - 'button "Google Account: Goh Zhong Xuen (gohzx2006@gmail.com)" [ref=f13e66] [cursor=pointer]'
+      - alert [ref=f13e71]
+    - navigation [ref=f13e75]:
+      - generic [ref=f13e76]:
+        - link "Mail" [ref=f13e77] [cursor=pointer]
+        - heading "Mail" [level=2] [ref=f13e78] [cursor=pointer]
+      - generic [ref=f13e79]:
+        - link "Chat" [ref=f13e80] [cursor=pointer]
+        - heading "Chat" [level=2] [ref=f13e81] [cursor=pointer]
+      - generic [ref=f13e82]:
+        - link "Meet" [ref=f13e83] [cursor=pointer]
+        - heading "Meet" [level=2] [ref=f13e84] [cursor=pointer]
