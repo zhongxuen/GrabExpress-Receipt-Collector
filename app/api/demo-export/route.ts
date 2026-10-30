@@ -4,6 +4,7 @@ import { parseGrabReceipt, ReceiptParseError } from "@/lib/receiptParser";
 import { buildReceiptWorkbook, countByService } from "@/lib/exporter";
 import { demoFixtures } from "@/lib/demoFixtures";
 import { checkRateLimit } from "@/lib/rateLimit";
+import { applySpendLimit, parseSpendLimit, summarizeSpendLimit } from "@/lib/spendLimit";
 import type { ExportMeta, Receipt, SkippedMessage } from "@/lib/types";
 
 // Publicly callable — no session/auth check. Sources fixture HTML instead of
@@ -50,8 +51,10 @@ export async function POST(req: NextRequest) {
   }
 
   let query: string;
+  let spendLimit: number | undefined;
   try {
     ({ query } = buildGmailQuery(body));
+    spendLimit = parseSpendLimit(body.spendLimit);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Invalid date range";
     return NextResponse.json({ error: message }, { status: 400 });
@@ -70,7 +73,7 @@ export async function POST(req: NextRequest) {
     return true;
   });
 
-  const receipts: Receipt[] = [];
+  let receipts: Receipt[] = [];
   const skipped: SkippedMessage[] = [];
   const seenMessageIds = new Set<string>();
   const seenBookingCodes = new Set<string>();
@@ -92,10 +95,18 @@ export async function POST(req: NextRequest) {
     receipts.push(receipt);
   }
 
+  // Fixtures have no Gmail arrival time; their receipt dates alone order them.
+  const limitResult =
+    spendLimit !== undefined ? applySpendLimit(receipts.map((receipt) => ({ receipt })), spendLimit) : undefined;
+  if (limitResult) receipts = limitResult.kept;
+  const spendLimitSummary =
+    spendLimit !== undefined && limitResult ? summarizeSpendLimit(spendLimit, limitResult) : undefined;
+
   const buffer = await buildReceiptWorkbook(receipts, {
     rangeLabel: describeDateRange(query),
     isDemo: true,
     skippedCount: skipped.length,
+    spendLimit: spendLimitSummary,
   });
   // Fixed filename (never the real export's name) so a downloads folder can
   // never confuse a demo file for a real one.
@@ -106,6 +117,7 @@ export async function POST(req: NextRequest) {
     exported: receipts.length,
     byService: countByService(receipts),
     skipped,
+    spendLimit: spendLimitSummary,
   };
 
   return new NextResponse(new Uint8Array(buffer), {

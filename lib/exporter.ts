@@ -1,5 +1,5 @@
 import ExcelJS from "exceljs";
-import type { GrabService, Receipt } from "./types";
+import type { GrabService, Receipt, SpendLimitSummary } from "./types";
 
 /** Per-service receipt counts for the export summary shown in the UI. */
 export function countByService(receipts: Receipt[]): Record<GrabService, number> {
@@ -14,6 +14,7 @@ export interface WorkbookOptions {
   rangeLabel?: string;
   isDemo?: boolean;
   skippedCount?: number;
+  spendLimit?: SpendLimitSummary;
   generatedAt?: Date;
 }
 
@@ -190,6 +191,16 @@ function buildSummarySheet(
     ["Generated", generated],
     ["Date range", options.rangeLabel ?? "All time"],
   ];
+  if (options.spendLimit) {
+    const { limit, total, nextExcluded } = options.spendLimit;
+    info.push(["Spend limit", `RM${limit.toFixed(2)} (most recent receipts totalling RM${total.toFixed(2)})`]);
+    if (nextExcluded) {
+      info.push([
+        "Next receipt",
+        `${nextExcluded.date} · ${nextExcluded.service} · RM${nextExcluded.amount.toFixed(2)} — not included, would exceed the limit`,
+      ]);
+    }
+  }
   if (options.isDemo) info.push(["Mode", "Demo data (synthetic receipts, not from a real inbox)"]);
   info.forEach(([label, value], i) => {
     const row = sheet.getRow(3 + i);

@@ -13,10 +13,12 @@ export interface DateRangeInput {
 }
 
 /** POST body for /api/export and /api/demo-export: the date range plus an
- * optional service filter. `services` is untrusted, so routes run it through
- * parseServices rather than reading it directly. */
+ * optional service filter and spend limit. `services` and `spendLimit` are
+ * untrusted, so routes run them through parseServices / parseSpendLimit
+ * rather than reading them directly. */
 export interface ExportRequestBody extends DateRangeInput {
   services?: unknown;
+  spendLimit?: unknown;
 }
 
 export interface ResolvedDateRange {

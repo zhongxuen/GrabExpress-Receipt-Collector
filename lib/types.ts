@@ -29,12 +29,22 @@ export interface SkippedMessage {
   reason: string;
 }
 
+/** Outcome of an optional "last RM X spent" cap — see lib/spendLimit.ts. */
+export interface SpendLimitSummary {
+  limit: number;
+  /** Total of the exported receipts, in RM — never more than `limit`. */
+  total: number;
+  /** The most recent receipt left out because it would have exceeded the limit. */
+  nextExcluded?: Pick<Receipt, "date" | "amount" | "service">;
+}
+
 /** Summary sent back to the UI in the X-Export-Meta header. */
 export interface ExportMeta {
   totalFound: number;
   exported: number;
   byService: Record<GrabService, number>;
   skipped: SkippedMessage[];
+  spendLimit?: SpendLimitSummary;
 }
 
 export interface ExportResult {

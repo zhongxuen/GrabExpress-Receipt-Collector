@@ -6,6 +6,14 @@ import { searchMessages, fetchMessageContent, getAuthenticatedEmail } from "@/li
 import { parseGrabReceipt, ReceiptParseError } from "@/lib/receiptParser";
 import { buildReceiptWorkbook, countByService } from "@/lib/exporter";
 import { mapWithConcurrency } from "@/lib/concurrency";
+import {
+  applySpendLimit,
+  canStopFetching,
+  parseSpendLimit,
+  spendLimitFilenameLabel,
+  summarizeSpendLimit,
+  type DatedReceipt,
+} from "@/lib/spendLimit";
 import type { ExportMeta, Receipt, SkippedMessage } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -18,9 +26,57 @@ export const maxDuration = 300;
 // risk exceeding maxDuration above.
 const FETCH_CONCURRENCY = 8;
 
+// With a spend limit, messages are fetched newest-first in batches of this
+// size, checking after each batch whether the rest can be skipped.
+const SPEND_LIMIT_BATCH_SIZE = FETCH_CONCURRENCY * 3;
+
 type MessageOutcome =
-  | { kind: "receipt"; receipt: Receipt }
-  | { kind: "skipped"; skipped: SkippedMessage };
+  | { kind: "receipt"; receipt: Receipt; receivedAt?: number }
+  | { kind: "skipped"; skipped: SkippedMessage; receivedAt?: number };
+
+async function processMessage(accessToken: string, messageId: string): Promise<MessageOutcome> {
+  let receivedAt: number | undefined;
+  try {
+    const content = await fetchMessageContent(accessToken, messageId);
+    receivedAt = content.receivedAt;
+    if (!content.html) {
+      return { kind: "skipped", skipped: { messageId, reason: "No HTML body found in message" }, receivedAt };
+    }
+    const receipt = parseGrabReceipt(content.html, messageId, content.fromHeader, content.subject);
+    return { kind: "receipt", receipt, receivedAt };
+  } catch (err) {
+    const reason =
+      err instanceof ReceiptParseError
+        ? err.message
+        : err instanceof Error
+          ? `Gmail API error: ${err.message}`
+          : "Unexpected error while processing message";
+    console.error(`[export] Skipped message ${messageId}: ${reason}`);
+    return { kind: "skipped", skipped: { messageId, reason }, receivedAt };
+  }
+}
+
+/** Splits outcomes into receipts and skips, dropping duplicates (same Message
+ * ID or Booking Code) — duplicates aren't failures, so they're dropped silently. */
+function collectOutcomes(outcomes: MessageOutcome[]): { receipts: DatedReceipt[]; skipped: SkippedMessage[] } {
+  const receipts: DatedReceipt[] = [];
+  const skipped: SkippedMessage[] = [];
+  const seenMessageIds = new Set<string>();
+  const seenBookingCodes = new Set<string>();
+
+  for (const outcome of outcomes) {
+    if (outcome.kind === "skipped") {
+      skipped.push(outcome.skipped);
+      continue;
+    }
+    const { receipt, receivedAt } = outcome;
+    if (seenMessageIds.has(receipt.messageId) || seenBookingCodes.has(receipt.receiptNo)) continue;
+    seenMessageIds.add(receipt.messageId);
+    seenBookingCodes.add(receipt.receiptNo);
+    receipts.push({ receipt, receivedAt });
+  }
+  return { receipts, skipped };
+}
 
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions);
@@ -47,8 +103,10 @@ export async function POST(req: NextRequest) {
 
   let query: string;
   let filenameLabel: string;
+  let spendLimit: number | undefined;
   try {
     ({ query, filenameLabel } = buildGmailQuery(body, new Date(), parseServices(body.services)));
+    spendLimit = parseSpendLimit(body.spendLimit);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Invalid date range";
     return NextResponse.json({ error: message }, { status: 400 });
@@ -71,47 +129,34 @@ export async function POST(req: NextRequest) {
   console.log(`[export] Found ${found.length} matching message(s)`);
 
   const accessToken = session.accessToken;
-  const outcomes = await mapWithConcurrency(
-    found,
-    FETCH_CONCURRENCY,
-    async ({ messageId }): Promise<MessageOutcome> => {
-      try {
-        const { html, fromHeader, subject } = await fetchMessageContent(accessToken, messageId);
-        if (!html) {
-          return { kind: "skipped", skipped: { messageId, reason: "No HTML body found in message" } };
-        }
-        return { kind: "receipt", receipt: parseGrabReceipt(html, messageId, fromHeader, subject) };
-      } catch (err) {
-        const reason =
-          err instanceof ReceiptParseError
-            ? err.message
-            : err instanceof Error
-              ? `Gmail API error: ${err.message}`
-              : "Unexpected error while processing message";
-        console.error(`[export] Skipped message ${messageId}: ${reason}`);
-        return { kind: "skipped", skipped: { messageId, reason } };
-      }
-    }
-  );
+  const outcomes: MessageOutcome[] = [];
 
-  const receipts: Receipt[] = [];
-  const skipped: SkippedMessage[] = [];
-  const seenMessageIds = new Set<string>();
-  const seenBookingCodes = new Set<string>();
-
-  for (const outcome of outcomes) {
-    if (outcome.kind === "skipped") {
-      skipped.push(outcome.skipped);
-      continue;
+  if (spendLimit === undefined) {
+    outcomes.push(
+      ...(await mapWithConcurrency(found, FETCH_CONCURRENCY, ({ messageId }) => processMessage(accessToken, messageId)))
+    );
+  } else {
+    // Gmail lists newest-arrival first, so fetch from the top and stop once
+    // canStopFetching proves the remaining (older) messages can't matter.
+    for (let offset = 0; offset < found.length; offset += SPEND_LIMIT_BATCH_SIZE) {
+      const batch = found.slice(offset, offset + SPEND_LIMIT_BATCH_SIZE);
+      outcomes.push(
+        ...(await mapWithConcurrency(batch, FETCH_CONCURRENCY, ({ messageId }) => processMessage(accessToken, messageId)))
+      );
+      const partial = applySpendLimit(collectOutcomes(outcomes).receipts, spendLimit);
+      const arrivals = outcomes.map((o) => o.receivedAt).filter((t): t is number => t !== undefined);
+      const oldestReceivedAt = arrivals.length ? Math.min(...arrivals) : undefined;
+      if (canStopFetching(partial, oldestReceivedAt)) break;
     }
-    const { receipt } = outcome;
-    if (seenMessageIds.has(receipt.messageId) || seenBookingCodes.has(receipt.receiptNo)) {
-      continue; // duplicate, not a failure — silently deduped per spec
-    }
-    seenMessageIds.add(receipt.messageId);
-    seenBookingCodes.add(receipt.receiptNo);
-    receipts.push(receipt);
+    console.log(`[export] Spend limit RM${spendLimit}: fetched ${outcomes.length} of ${found.length} message(s)`);
   }
+
+  const collected = collectOutcomes(outcomes);
+  const skipped = collected.skipped;
+  const limitResult = spendLimit !== undefined ? applySpendLimit(collected.receipts, spendLimit) : undefined;
+  const receipts: Receipt[] = limitResult ? limitResult.kept : collected.receipts.map((r) => r.receipt);
+  const spendLimitSummary =
+    spendLimit !== undefined && limitResult ? summarizeSpendLimit(spendLimit, limitResult) : undefined;
 
   const forwardedCount = receipts.filter((r) => r.source === "Forwarded").length;
   console.log(
@@ -121,14 +166,17 @@ export async function POST(req: NextRequest) {
   const buffer = await buildReceiptWorkbook(receipts, {
     rangeLabel: describeDateRange(query),
     skippedCount: skipped.length,
+    spendLimit: spendLimitSummary,
   });
-  const filename = `grab_receipts${filenameLabel ? "_" + filenameLabel : ""}.xlsx`;
+  const labels = [filenameLabel, spendLimit !== undefined ? spendLimitFilenameLabel(spendLimit) : ""].filter(Boolean);
+  const filename = `grab_receipts${labels.map((l) => "_" + l).join("")}.xlsx`;
 
   const meta: ExportMeta = {
     totalFound: found.length,
     exported: receipts.length,
     byService: countByService(receipts),
     skipped,
+    spendLimit: spendLimitSummary,
   };
 
   return new NextResponse(new Uint8Array(buffer), {

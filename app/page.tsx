@@ -18,6 +18,7 @@ import type { ExportMeta, GrabService } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { DateRangePicker } from "@/components/date-range-picker";
+import { Input } from "@/components/ui/input";
 
 type Status = "idle" | "loading" | "done" | "error";
 
@@ -34,6 +35,17 @@ function describeByService(byService: ExportMeta["byService"] | undefined): stri
     .map((opt) => `${byService[opt.key]} ${opt.summaryLabel(byService[opt.key])}`)
     .join(", ");
 }
+
+const SPEND_LIMIT_PRESETS = [200, 500];
+
+/** Empty means "no limit"; otherwise a positive RM amount (server re-validates). */
+function isValidSpendLimit(text: string): boolean {
+  if (text.trim() === "") return true;
+  const value = Number(text);
+  return Number.isFinite(value) && value > 0;
+}
+
+const formatRM = (amount: number) => `RM${amount.toFixed(2)}`;
 
 const PROGRESS_STEPS = [
   "Searching Gmail for Grab receipts...",
@@ -60,6 +72,8 @@ export default function Home() {
   const [rangeInput, setRangeInput] = useState<DateRangeInput>({ mode: "all" });
   const [rangeValid, setRangeValid] = useState(true);
   const [services, setServices] = useState<GrabService[]>(SERVICE_OPTIONS.map((opt) => opt.key));
+  const [spendLimitText, setSpendLimitText] = useState("");
+  const spendLimitValid = isValidSpendLimit(spendLimitText);
 
   const [status, setStatus] = useState<Status>("idle");
   const [errorMessage, setErrorMessage] = useState("");
@@ -95,7 +109,7 @@ export default function Home() {
       const res = await fetch(isDemo ? "/api/demo-export" : "/api/export", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...rangeInput, services }),
+        body: JSON.stringify({ ...rangeInput, services, spendLimit: spendLimitText.trim() || undefined }),
       });
 
       if (!res.ok) {
@@ -133,7 +147,9 @@ export default function Home() {
         });
       } else {
         toast.message("No receipts found", {
-          description: "Try a different date range.",
+          description: meta.spendLimit?.nextExcluded
+            ? "Your most recent receipt is already over the spend limit."
+            : "Try a different date range.",
         });
       }
     } catch {
@@ -302,11 +318,59 @@ export default function Home() {
               )}
             </div>
 
+            <div>
+              <p className="mb-1 text-sm font-medium">Spend limit (optional)</p>
+              <p className="mb-2 text-xs text-muted-foreground">
+                Only the most recent receipts, counting back until the next one would go over this
+                amount.
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative w-36">
+                  <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
+                    RM
+                  </span>
+                  <Input
+                    type="number"
+                    inputMode="decimal"
+                    min="0"
+                    step="0.01"
+                    placeholder="No limit"
+                    aria-label="Spend limit in RM"
+                    className="pl-10"
+                    value={spendLimitText}
+                    onChange={(e) => setSpendLimitText(e.target.value)}
+                    invalid={!spendLimitValid}
+                  />
+                </div>
+                {SPEND_LIMIT_PRESETS.map((preset) => {
+                  const selected = spendLimitText.trim() !== "" && Number(spendLimitText) === preset;
+                  return (
+                    <Button
+                      key={preset}
+                      type="button"
+                      size="sm"
+                      variant={selected ? "default" : "outline"}
+                      aria-pressed={selected}
+                      onClick={() => setSpendLimitText(selected ? "" : String(preset))}
+                    >
+                      RM{preset}
+                    </Button>
+                  );
+                })}
+              </div>
+              {!spendLimitValid && (
+                <p className="mt-2 flex items-center gap-1.5 text-sm text-destructive animate-fade-in">
+                  <AlertTriangle className="h-4 w-4 shrink-0" />
+                  Enter a positive amount, or leave it empty for no limit.
+                </p>
+              )}
+            </div>
+
             <Button
               size="lg"
               className="w-full"
               onClick={handleGenerate}
-              disabled={!rangeValid || services.length === 0 || isLoading}
+              disabled={!rangeValid || services.length === 0 || !spendLimitValid || isLoading}
             >
               {isLoading ? (
                 <>
@@ -361,8 +425,9 @@ export default function Home() {
                 <Inbox className="h-8 w-8 text-muted-foreground" />
                 <p className="font-medium">No receipts found</p>
                 <p className="text-sm text-muted-foreground">
-                  Found {resultMeta.totalFound} message(s) but nothing matched. Try a different
-                  date range.
+                  {resultMeta.spendLimit?.nextExcluded
+                    ? `Your most recent receipt (${resultMeta.spendLimit.nextExcluded.date}, ${formatRM(resultMeta.spendLimit.nextExcluded.amount)}) is already over the ${formatRM(resultMeta.spendLimit.limit)} limit.`
+                    : `Found ${resultMeta.totalFound} message(s) but nothing matched. Try a different date range.`}
                 </p>
               </div>
             )}
@@ -378,6 +443,14 @@ export default function Home() {
                 {describeByService(resultMeta.byService) && (
                   <p className="text-xs text-muted-foreground">
                     {describeByService(resultMeta.byService)}
+                  </p>
+                )}
+                {resultMeta.spendLimit && (
+                  <p className="text-xs text-muted-foreground">
+                    {formatRM(resultMeta.spendLimit.total)} of your {formatRM(resultMeta.spendLimit.limit)}{" "}
+                    limit.
+                    {resultMeta.spendLimit.nextExcluded &&
+                      ` Next receipt (${resultMeta.spendLimit.nextExcluded.date}, ${resultMeta.spendLimit.nextExcluded.service}, ${formatRM(resultMeta.spendLimit.nextExcluded.amount)}) not included — it would exceed the limit.`}
                   </p>
                 )}
                 {resultMeta.skipped.length > 0 && (

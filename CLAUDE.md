@@ -57,6 +57,13 @@ Key design points from the spec that aren't obvious from module names alone:
 
 - The Gmail search itself is the date filter (`after:`/`before:` query params) — there's no
   separate in-memory date filtering step.
+- The optional **spend limit** ("last RM500 spent", `lib/spendLimit.ts`) is the one filter Gmail
+  can't do, so it's applied after parsing: receipts are walked newest-first by their printed date
+  and kept until the next one would push the total over the limit (never over; contiguous — a
+  receipt that doesn't fit ends the window rather than being skipped). The excluded "next receipt"
+  is noted on the Summary sheet and in the UI. `/api/export` fetches newest-first in batches and
+  stops early once the oldest fetched email's arrival (`internalDate`) predates the excluded
+  receipt's date — safe because a receipt's date is never after its email's arrival.
 - The Booking Code (GrabExpress, GrabFood delivery) / Booking ID (rides) is the Receipt Number —
   Grab doesn't expose a separate invoice ID. GrabFood dine-in has no booking code, so its Order ID
   (`0014…-C8…`) is used instead.

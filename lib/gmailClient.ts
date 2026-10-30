@@ -86,6 +86,9 @@ export interface MessageContent {
   fromHeader: string | null;
   /** "Subject" header — narrows which receipt parser applies (see parseGrabReceipt). */
   subject: string | null;
+  /** When the message reached the mailbox (epoch ms) — for forwarded receipts
+   * this is the forward time, always on or after the receipt's own date. */
+  receivedAt: number | undefined;
 }
 
 /**
@@ -105,13 +108,14 @@ export async function fetchMessageContent(
     format: "full",
   });
 
+  const receivedAt = res.data.internalDate ? Number(res.data.internalDate) : undefined;
   const payload = res.data.payload;
-  if (!payload) return { html: null, fromHeader: null, subject: null };
+  if (!payload) return { html: null, fromHeader: null, subject: null, receivedAt };
 
   const fromHeader = getHeader(payload.headers, "From");
   const subject = getHeader(payload.headers, "Subject");
   const htmlData = findHtmlPart(payload);
-  if (!htmlData) return { html: null, fromHeader, subject };
+  if (!htmlData) return { html: null, fromHeader, subject, receivedAt };
 
-  return { html: decodeBase64Url(htmlData), fromHeader, subject };
+  return { html: decodeBase64Url(htmlData), fromHeader, subject, receivedAt };
 }
