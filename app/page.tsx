@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { DateRangePicker } from "@/components/date-range-picker";
 import { Input } from "@/components/ui/input";
+import { ManualEntriesEditor, isValidDraft, type ManualEntryDraft } from "@/components/manual-entries-editor";
 
 type Status = "idle" | "loading" | "done" | "error";
 
@@ -26,9 +27,10 @@ const SERVICE_OPTIONS: { key: GrabService; label: string; summaryLabel: (n: numb
   { key: "food", label: "GrabFood", summaryLabel: () => "GrabFood" },
   { key: "transport", label: "Rides", summaryLabel: (n) => (n === 1 ? "ride" : "rides") },
   { key: "express", label: "GrabExpress", summaryLabel: () => "GrabExpress" },
+  { key: "payment", label: "GrabPay", summaryLabel: (n) => (n === 1 ? "GrabPay payment" : "GrabPay payments") },
 ];
 
-/** e.g. "50 GrabFood, 45 rides, 2 GrabExpress" — services with no receipts are left out. */
+/** e.g. "50 GrabFood, 45 rides, 2 GrabExpress, 3 GrabPay payments" — services with no receipts are left out. */
 function describeByService(byService: ExportMeta["byService"] | undefined): string {
   if (!byService) return "";
   return SERVICE_OPTIONS.filter((opt) => byService[opt.key] > 0)
@@ -44,6 +46,12 @@ function isValidSpendLimit(text: string): boolean {
   const value = Number(text);
   return Number.isFinite(value) && value > 0;
 }
+
+// Manual entries are re-typed from the Grab app, so keep them across visits.
+// Browser-local only; the export still works if storage is unavailable.
+const MANUAL_ENTRIES_STORAGE_KEY = "grab-receipt-collector:manual-entries";
+
+const isBlankDraft = (d: ManualEntryDraft) => !d.date && !d.merchant.trim() && !d.amount.trim();
 
 const formatRM = (amount: number) => `RM${amount.toFixed(2)}`;
 
@@ -74,6 +82,12 @@ export default function Home() {
   const [services, setServices] = useState<GrabService[]>(SERVICE_OPTIONS.map((opt) => opt.key));
   const [spendLimitText, setSpendLimitText] = useState("");
   const spendLimitValid = isValidSpendLimit(spendLimitText);
+  const [manualEntries, setManualEntries] = useState<ManualEntryDraft[]>([]);
+  // State, not a ref: the save effect must not run until the loaded entries
+  // have rendered, or it would overwrite storage with the initial [].
+  const [manualLoaded, setManualLoaded] = useState(false);
+  const filledManualEntries = manualEntries.filter((d) => !isBlankDraft(d));
+  const manualEntriesValid = filledManualEntries.every(isValidDraft);
 
   const [status, setStatus] = useState<Status>("idle");
   const [errorMessage, setErrorMessage] = useState("");
@@ -94,6 +108,25 @@ export default function Home() {
     if (params.get("demo") === "1") setIsDemo(true);
   }, []);
 
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(MANUAL_ENTRIES_STORAGE_KEY);
+      if (saved) setManualEntries(JSON.parse(saved) as ManualEntryDraft[]);
+    } catch {
+      // Storage blocked or corrupt — start empty.
+    }
+    setManualLoaded(true);
+  }, []);
+
+  useEffect(() => {
+    if (!manualLoaded) return;
+    try {
+      localStorage.setItem(MANUAL_ENTRIES_STORAGE_KEY, JSON.stringify(manualEntries));
+    } catch {
+      // Not persisted; entries still apply to this session's exports.
+    }
+  }, [manualEntries, manualLoaded]);
+
   async function handleGenerate() {
     setStatus("loading");
     setErrorMessage("");
@@ -109,7 +142,15 @@ export default function Home() {
       const res = await fetch(isDemo ? "/api/demo-export" : "/api/export", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...rangeInput, services, spendLimit: spendLimitText.trim() || undefined }),
+        body: JSON.stringify({
+          ...rangeInput,
+          services,
+          spendLimit: spendLimitText.trim() || undefined,
+          // Demo Mode runs on sample data only, so personal entries stay out of it.
+          manualEntries: isDemo
+            ? undefined
+            : filledManualEntries.map(({ date, merchant, amount }) => ({ date, merchant, amount: Number(amount) })),
+        }),
       });
 
       if (!res.ok) {
@@ -124,7 +165,7 @@ export default function Home() {
       const metaHeader = res.headers.get("X-Export-Meta");
       const meta: ExportMeta = metaHeader
         ? JSON.parse(decodeURIComponent(metaHeader))
-        : { totalFound: 0, exported: 0, byService: { express: 0, food: 0, transport: 0 }, skipped: [] };
+        : { totalFound: 0, exported: 0, byService: { express: 0, food: 0, transport: 0, payment: 0 }, skipped: [] };
 
       const filename = extractFilename(res.headers.get("Content-Disposition"));
       const blob = await res.blob();
@@ -177,8 +218,8 @@ export default function Home() {
           </h1>
         </div>
         <p className="text-sm text-muted-foreground sm:text-base">
-          Sign in with Google, pick a date range, and download your GrabFood, ride, and
-          GrabExpress receipts as a spreadsheet.
+          Sign in with Google, pick a date range, and download your GrabFood, ride,
+          GrabExpress, and GrabPay receipts as a spreadsheet.
         </p>
       </header>
 
@@ -366,11 +407,29 @@ export default function Home() {
               )}
             </div>
 
+            {!isDemo && (
+              <div>
+                <ManualEntriesEditor entries={manualEntries} onChange={setManualEntries} />
+                {!manualEntriesValid && (
+                  <p className="mt-2 flex items-center gap-1.5 text-sm text-destructive animate-fade-in">
+                    <AlertTriangle className="h-4 w-4 shrink-0" />
+                    Each payment needs a date, a merchant, and a positive amount.
+                  </p>
+                )}
+              </div>
+            )}
+
             <Button
               size="lg"
               className="w-full"
               onClick={handleGenerate}
-              disabled={!rangeValid || services.length === 0 || !spendLimitValid || isLoading}
+              disabled={
+                !rangeValid ||
+                services.length === 0 ||
+                !spendLimitValid ||
+                (!isDemo && !manualEntriesValid) ||
+                isLoading
+              }
             >
               {isLoading ? (
                 <>
@@ -443,6 +502,7 @@ export default function Home() {
                 {describeByService(resultMeta.byService) && (
                   <p className="text-xs text-muted-foreground">
                     {describeByService(resultMeta.byService)}
+                    {resultMeta.manual ? ` (incl. ${resultMeta.manual} added manually)` : ""}
                   </p>
                 )}
                 {resultMeta.spendLimit && (

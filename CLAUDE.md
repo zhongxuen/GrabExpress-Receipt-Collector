@@ -11,7 +11,8 @@ the single-page UI all exist under `app/` and `lib/`. Typecheck, lint, and `next
 Remaining before production use: real Google OAuth credentials (`GOOGLE_CLIENT_ID`/
 `GOOGLE_CLIENT_SECRET`/`NEXTAUTH_SECRET` in `.env.local` and Vercel), a Vercel deployment, and
 manual testing against a real Gmail inbox. Parsing has been verified against real raw (Gmail
-"Show original") receipt HTML for GrabExpress, GrabFood delivery/dine-in, and GrabCar rides.
+"Show original") receipt HTML for GrabExpress, GrabFood delivery/dine-in, GrabCar rides, and
+GrabPay merchant payments.
 
 An earlier version of this project was a local Python CLI tool; it has been superseded by the web
 app design below and the Python implementation was removed from the repo (still recoverable via
@@ -21,7 +22,8 @@ git history if ever needed).
 
 A **Next.js web app, deployed on Vercel**, that lets any Gmail user sign in with Google,
 authenticates with Gmail via the official Gmail API, finds Grab receipt emails (GrabFood delivery
-and dine-in, GrabCar rides, and GrabExpress — see `md files/general-grab-receipts-plan.md`), parses
+and dine-in, GrabCar rides, GrabExpress, and GrabPay merchant payments — see
+`md files/general-grab-receipts-plan.md` and `md files/grabpay-payments-plan.md`), parses
 receipt data out of the email HTML, and lets the user download the results as a formatted `.xlsx`
 file. No web scraping, no browser automation, no PDF/OCR, no Sheets export, no database — session
 state lives in an encrypted auth cookie, not a persisted store.
@@ -39,10 +41,11 @@ single responsibility:
   falling back to regex only where necessary. Must not hardcode element positions, since it needs
   to tolerate minor HTML layout drift. `BaseGrabReceiptParser` holds the shared plumbing (label
   lookup, forward-header stripping, space-joined text flattening); `GrabExpressReceiptParser`,
-  `GrabFoodReceiptParser` (delivery + dine-in), and `GrabTransportReceiptParser` (rides) each
-  supply their own label regexes. `parseGrabReceipt(html, messageId, from, subject)` picks the
-  parser (see "Gmail search query" below for why the body, not just the subject, decides).
-  GrabMart/GrabBike/GrabPay payment receipts aren't supported; unrecognised layouts are skipped
+  `GrabFoodReceiptParser` (delivery + dine-in), `GrabTransportReceiptParser` (rides), and
+  `GrabPayPaymentReceiptParser` (GrabPay "You've made a payment to …") each supply their own
+  label regexes. `parseGrabReceipt(html, messageId, { fromHeader, subject, receivedAt,
+  dateHeader })` picks the parser (see "Gmail search query" below for why the body, not just the
+  subject, decides). GrabMart/GrabBike receipts aren't supported; unrecognised layouts are skipped
   with a reason rather than misparsed.
 - **`lib/exporter.ts`** — Takes a list of `Receipt` objects, builds an `.xlsx` **in-memory buffer**
   via `exceljs` (bold header row, numeric amount column, `YYYY-MM-DD` date formatting, auto column
@@ -66,11 +69,25 @@ Key design points from the spec that aren't obvious from module names alone:
   receipt's date — safe because a receipt's date is never after its email's arrival.
 - The Booking Code (GrabExpress, GrabFood delivery) / Booking ID (rides) is the Receipt Number —
   Grab doesn't expose a separate invoice ID. GrabFood dine-in has no booking code, so its Order ID
-  (`0014…-C8…`) is used instead.
+  (`0014…-C8…`) is used instead. GrabPay payments use their 32-hex `Transaction ID`.
+- GrabPay payment emails carry **no date in the body** — they're sent at the moment of payment, so
+  the date is the message's `internalDate` (fallback: `Date` header) converted to
+  **Asia/Kuala_Lumpur**, not server-local time (Vercel runs UTC). A forwarded copy prefers the
+  forward header's `Date:` line. Amount is `Total` (after offers/points), never `Order amount`.
+  Incoming money (top-ups, transfers received, refunds) sends no email, so it never appears.
+- **Not every GrabPay payment has an email.** Checked against a real inbox (Oct 2026): of 10
+  outgoing payments in the Grab app's Activity History → Finance, only 3 (Domino's, McDonald's,
+  Leading Innovative Technologies) had a "made a payment to" email. QR / in-store merchants (KK Mart,
+  AEON, KFC, restaurants) and a payment gateway (Razer Merchant Services) had none, not even in
+  spam or trash. So the UI has a "Payments without an email" editor (`components/manual-entries-editor.tsx`,
+  saved in localStorage, not sent in Demo Mode). `/api/export` validates the entries with
+  `lib/manualEntries.ts`, filters them by the query's date range and the GrabPay service, and
+  exports them as service `GrabPay (no email)` with source `Manual` and a blank Receipt Number.
+  They count toward the spend limit like any other receipt.
 - Spreadsheet columns: Date | Receipt Number | Service | Merchant | Pickup | Drop-off | Amount (RM) |
   Source, sorted by date, with a `SUBTOTAL` total row (follows the autofilter) and a formula-driven
   "Summary" sheet (per-service count/amount, date range, generated-at, demo flag, skipped count).
-  Formatting/auto-width rationale lives in `md files/excel-formatting-plan.md`. Merchant is the restaurant for GrabFood; Pickup/Drop-off are filled for rides only (from
+  Formatting/auto-width rationale lives in `md files/excel-formatting-plan.md`. Merchant is the restaurant for GrabFood and the payee (`Payment to`) for GrabPay; Pickup/Drop-off are filled for rides only (from
   the "Your Trip" section, anchored on the `alt="pick-up"`/`alt="drop-off"` icons). GrabExpress
   addresses are not exported.
 - Gmail Message ID should be tracked internally (not exported to the spreadsheet) — it's the
@@ -93,7 +110,7 @@ Key design points from the spec that aren't obvious from module names alone:
 ## Gmail search query
 
 ```
-(subject:"Your GrabExpress Receipt" OR subject:"Your Grab E-Receipt")
+(subject:"Your GrabExpress Receipt" OR subject:"Your Grab E-Receipt" OR subject:"made a payment to")
 after:YYYY/MM/DD
 before:YYYY/MM/DD
 ```
@@ -107,11 +124,14 @@ against any non-receipt email that happens to match.
 
 GrabFood and GrabCar rides share the **same** subject, `Your Grab E-Receipt`, with completely
 different HTML (food uses GrabExpress-style label/value tables; rides use a newer div layout). So
-`parseGrabReceipt` dispatches on the body: "enjoyed your ride" → rides, "enjoyed your food" (or
+`parseGrabReceipt` dispatches on the body: a "made a payment to" subject (or a "You've made a payment
+to" headline plus a `Transaction ID` label) → GrabPay, checked first; "enjoyed your ride" → rides, "enjoyed your food" (or
 `Vehicle type:`/`Type of order:` labels) → GrabFood, a GrabExpress subject → GrabExpress, anything
 else → skipped as "Unrecognised Grab E-Receipt layout". The UI's optional service filter narrows
 the Gmail query the same way (`subject:"Your Grab E-Receipt" "enjoyed your food"` etc.) instead of
-filtering after the fetch; with all services selected it uses the plain subject union above.
+filtering after the fetch (GrabPay: `subject:"made a payment to"` — the phrase skips "You've" to
+avoid curly-vs-straight apostrophe mismatches); with all services selected it uses the plain
+subject union above.
 
 The UI should accept natural-language-ish date inputs (since/month/from-to, and ideally free-form
 phrases like "last 90 days") and translate them into this query syntax.
@@ -121,7 +141,7 @@ phrases like "last 90 days") and translate them into this query syntax.
 - Sign in with Google → grants read-only Gmail access.
 - Choose a date range: all time / since a date / a specific month / custom from–to / free-form
   phrase.
-- Choose services (GrabFood / Rides / GrabExpress, all on by default).
+- Choose services (GrabFood / Rides / GrabExpress / GrabPay, all on by default).
 - Click "Generate spreadsheet" → server runs the pipeline → browser downloads
   `grab_receipts[_<range>].xlsx` (demo: `grab_receipts_demo.xlsx`).
 - The result shows a per-service breakdown; skipped/failed messages are shown inline.
@@ -132,8 +152,8 @@ Since `gmail.readonly` is a sensitive OAuth scope, real sign-in only works for a
 Google test users (see `md files/adding-test-users.md`) until the app passes verification — that
 doesn't scale to anonymous portfolio traffic. Demo Mode (see `md files/demo-mode-plan.md`) sidesteps
 this: `app/api/demo-export/route.ts` mirrors `app/api/export/route.ts` but sources input from
-`lib/demoFixtures.ts` (bundled synthetic GrabExpress messages) instead of the Gmail API, requires no
-auth, and runs through the exact same `parseGrabExpressReceipt` → dedupe → `buildReceiptWorkbook`
+`lib/demoFixtures.ts` (bundled synthetic messages for all four services) instead of the Gmail API, requires no
+auth, and runs through the exact same `parseGrabReceipt` → dedupe → `buildReceiptWorkbook`
 pipeline as the real export — it's exercising the real parser/exporter, not a mock. It's rate-limited
 per-IP via `lib/rateLimit.ts` (best-effort in-memory, since it has no auth gate). In `app/page.tsx`,
 signed-out visitors see a "Try the demo" entry point, `isDemo` state switches which API route

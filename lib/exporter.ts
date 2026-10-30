@@ -3,7 +3,7 @@ import type { GrabService, Receipt, SpendLimitSummary } from "./types";
 
 /** Per-service receipt counts for the export summary shown in the UI. */
 export function countByService(receipts: Receipt[]): Record<GrabService, number> {
-  const counts: Record<GrabService, number> = { express: 0, food: 0, transport: 0 };
+  const counts: Record<GrabService, number> = { express: 0, food: 0, transport: 0, payment: 0 };
   for (const receipt of receipts) counts[receipt.category] += 1;
   return counts;
 }
@@ -107,8 +107,9 @@ function buildReceiptsSheet(sheet: ExcelJS.Worksheet, receipts: Receipt[]): numb
 
     // Flag forwarded receipts visually — they're still legitimate Grab
     // receipts, just relayed through another mailbox rather than sent
-    // directly by no-reply@grab.com, so they're worth a second look.
-    if (receipt.source === "Forwarded") {
+    // directly by no-reply@grab.com, so they're worth a second look. Manual
+    // entries have no email behind them at all, so they get the same flag.
+    if (receipt.source !== "Original") {
       row.getCell("source").font = { italic: true, color: { argb: FORWARDED_FONT_COLOR } };
       row.getCell("source").fill = { type: "pattern", pattern: "solid", fgColor: { argb: FORWARDED_FILL } };
     }
@@ -144,7 +145,9 @@ function buildReceiptsSheet(sheet: ExcelJS.Worksheet, receipts: Receipt[]): numb
 
 function addReceiptsTotalRow(sheet: ExcelJS.Worksheet, receipts: Receipt[], lastDataRow: number) {
   const row = sheet.getRow(lastDataRow + 1);
-  const countLetter = sheet.getColumn("receiptNo").letter;
+  // Count the Service column, not Receipt Number — manual entries have no
+  // receipt number, so COUNTA over it would undercount.
+  const countLetter = sheet.getColumn("service").letter;
   const amountLetter = sheet.getColumn("amount").letter;
   const total = roundCents(receipts.reduce((sum, r) => sum + r.amount, 0));
 

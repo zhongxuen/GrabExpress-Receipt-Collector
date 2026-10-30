@@ -2,26 +2,37 @@
 // in the body. "Forwarded" = relayed through another mailbox (e.g. by
 // whoever booked the delivery) — see CLAUDE.md's Gmail search query notes on
 // why forwarded receipts are still searched for and included, just flagged.
-export type ReceiptSource = "Original" | "Forwarded";
+// "Manual" = typed in by the user for a payment Grab never emailed (see
+// lib/manualEntries.ts) — there's no message behind it at all.
+export type ReceiptSource = "Original" | "Forwarded" | "Manual";
 
 // Coarse receipt family, matching the UI's service filter. `service` below
 // carries the finer label shown in the spreadsheet.
-export type GrabService = "express" | "food" | "transport";
+export type GrabService = "express" | "food" | "transport" | "payment";
 
 export interface Receipt {
   date: string; // YYYY-MM-DD
-  receiptNo: string; // Booking Code / Booking ID, or Order ID for GrabFood dine-in
+  /** Booking Code / Booking ID, Order ID for GrabFood dine-in, or Transaction ID for GrabPay */
+  receiptNo: string;
   amount: number;
-  /** e.g. "GrabExpress", "GrabFood", "GrabFood (Dine-in)", "GrabCar – Standard (JustGrab)" */
+  /** e.g. "GrabExpress", "GrabFood", "GrabFood (Dine-in)", "GrabCar – Standard (JustGrab)", "GrabPay" */
   service: string;
   category: GrabService;
-  /** Restaurant for GrabFood; absent for rides and GrabExpress. */
+  /** Restaurant for GrabFood, payee for GrabPay; absent for rides and GrabExpress. */
   merchant?: string;
   /** Ride pickup / drop-off location from the "Your Trip" section; rides only. */
   pickup?: string;
   dropoff?: string;
   source: ReceiptSource;
   messageId: string; // internal only, not exported to the spreadsheet
+}
+
+/** A GrabPay payment the user adds by hand from the app's Activity History,
+ * because Grab sent no email for it (e.g. QR / in-store payments). */
+export interface ManualEntry {
+  date: string; // YYYY-MM-DD
+  merchant: string;
+  amount: number;
 }
 
 export interface SkippedMessage {
@@ -45,6 +56,8 @@ export interface ExportMeta {
   byService: Record<GrabService, number>;
   skipped: SkippedMessage[];
   spendLimit?: SpendLimitSummary;
+  /** How many of `exported` came from manual entries rather than Gmail. */
+  manual?: number;
 }
 
 export interface ExportResult {

@@ -13,12 +13,14 @@ export interface DateRangeInput {
 }
 
 /** POST body for /api/export and /api/demo-export: the date range plus an
- * optional service filter and spend limit. `services` and `spendLimit` are
- * untrusted, so routes run them through parseServices / parseSpendLimit
- * rather than reading them directly. */
+ * optional service filter, spend limit, and manual entries. `services`,
+ * `spendLimit`, and `manualEntries` are untrusted, so routes run them through
+ * parseServices / parseSpendLimit / parseManualEntries rather than reading
+ * them directly. */
 export interface ExportRequestBody extends DateRangeInput {
   services?: unknown;
   spendLimit?: unknown;
+  manualEntries?: unknown;
 }
 
 export interface ResolvedDateRange {
@@ -238,7 +240,7 @@ export function resolveDateRange(input: DateRangeInput, now: Date = new Date()):
   }
 }
 
-export const ALL_GRAB_SERVICES: GrabService[] = ["express", "food", "transport"];
+export const ALL_GRAB_SERVICES: GrabService[] = ["express", "food", "transport", "payment"];
 
 /** Validates the untrusted `services` field of an export request body.
  * Anything missing or malformed means "all services". */
@@ -255,6 +257,9 @@ const SERVICE_CLAUSES: Record<GrabService, string> = {
   express: 'subject:"Your GrabExpress Receipt"',
   food: '(subject:"Your Grab E-Receipt" "enjoyed your food")',
   transport: '(subject:"Your Grab E-Receipt" "enjoyed your ride")',
+  // GrabPay merchant payments: "You've made a payment to <Merchant> 🎉". The
+  // phrase skips "You've" to dodge curly-vs-straight apostrophe mismatches.
+  payment: 'subject:"made a payment to"',
 };
 
 // No `from:` filter: real GrabExpress receipts often reach the target mailbox
@@ -262,7 +267,7 @@ const SERVICE_CLAUSES: Record<GrabService, string> = {
 // filtering on sender silently excludes them. The subject phrases survive
 // forwarding (Gmail just prepends "Fwd:"), so they're the reliable match.
 export const GRAB_RECEIPT_SEARCH_BASE =
-  '(subject:"Your GrabExpress Receipt" OR subject:"Your Grab E-Receipt")';
+  '(subject:"Your GrabExpress Receipt" OR subject:"Your Grab E-Receipt" OR subject:"made a payment to")';
 
 /** The search clause for a set of services. All (or none) selected means the
  * plain subject union, which also catches any E-Receipt variant whose
@@ -308,4 +313,17 @@ export function describeDateRange(query: string): string {
   if (from) return `Since ${from}`;
   if (to) return `Up to ${to}`;
   return "All time";
+}
+
+/**
+ * Whether a YYYY-MM-DD date falls inside a Gmail query's after:/before:
+ * bounds — for receipts that never went through the Gmail search (manual
+ * entries). Gmail's after: is inclusive and before: exclusive.
+ */
+export function isWithinQueryRange(date: string, query: string): boolean {
+  const after = /after:(\d{4})\/(\d{2})\/(\d{2})/.exec(query);
+  const before = /before:(\d{4})\/(\d{2})\/(\d{2})/.exec(query);
+  if (after && date < `${after[1]}-${after[2]}-${after[3]}`) return false;
+  if (before && date >= `${before[1]}-${before[2]}-${before[3]}`) return false;
+  return true;
 }

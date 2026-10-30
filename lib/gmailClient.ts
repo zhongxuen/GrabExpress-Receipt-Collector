@@ -89,10 +89,13 @@ export interface MessageContent {
   /** When the message reached the mailbox (epoch ms) — for forwarded receipts
    * this is the forward time, always on or after the receipt's own date. */
   receivedAt: number | undefined;
+  /** "Date" header — fallback for `receivedAt` when dating receipts whose body
+   * has no date (GrabPay payments). */
+  dateHeader: string | null;
 }
 
 /**
- * Fetches a single message's HTML body and its "From"/"Subject" headers. `html` is null
+ * Fetches a single message's HTML body and its "From"/"Subject"/"Date" headers. `html` is null
  * if the message has no HTML part (caller should treat this as a skip, not a
  * fatal error). Headers come back on the same `format: "full"` call already
  * needed for the body, so this adds no extra Gmail API round trip.
@@ -110,12 +113,13 @@ export async function fetchMessageContent(
 
   const receivedAt = res.data.internalDate ? Number(res.data.internalDate) : undefined;
   const payload = res.data.payload;
-  if (!payload) return { html: null, fromHeader: null, subject: null, receivedAt };
+  if (!payload) return { html: null, fromHeader: null, subject: null, receivedAt, dateHeader: null };
 
   const fromHeader = getHeader(payload.headers, "From");
   const subject = getHeader(payload.headers, "Subject");
+  const dateHeader = getHeader(payload.headers, "Date");
   const htmlData = findHtmlPart(payload);
-  if (!htmlData) return { html: null, fromHeader, subject, receivedAt };
+  if (!htmlData) return { html: null, fromHeader, subject, receivedAt, dateHeader };
 
-  return { html: decodeBase64Url(htmlData), fromHeader, subject, receivedAt };
+  return { html: decodeBase64Url(htmlData), fromHeader, subject, receivedAt, dateHeader };
 }

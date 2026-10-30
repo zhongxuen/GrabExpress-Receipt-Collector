@@ -81,7 +81,13 @@ export async function POST(req: NextRequest) {
   for (const message of found) {
     let receipt: Receipt;
     try {
-      receipt = parseGrabReceipt(message.html, message.messageId, message.fromHeader, message.subject);
+      receipt = parseGrabReceipt(message.html, message.messageId, {
+        fromHeader: message.fromHeader,
+        subject: message.subject,
+        // Stand-in for Gmail's arrival time: midday Malaysian time on the
+        // fixture's date. Only GrabPay payments (no date in the body) use it.
+        receivedAt: Date.parse(`${message.date}T12:00:00+08:00`),
+      });
     } catch (err) {
       const reason = err instanceof ReceiptParseError ? err.message : "Unexpected error while processing message";
       skipped.push({ messageId: message.messageId, reason });

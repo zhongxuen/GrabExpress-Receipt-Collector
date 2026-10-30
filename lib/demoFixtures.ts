@@ -297,6 +297,50 @@ function rideReceiptHtml(opts: RideReceiptOptions): string {
 </div>`;
 }
 
+interface PaymentReceiptOptions {
+  merchant: string;
+  orderAmount: string; // e.g. "45.00"
+  offer: string; // e.g. "5.00" — shown as "-RM5.00"
+  pointsUsed: string; // RM value of points redeemed
+  points: number; // points redeemed
+  total: string; // what was actually paid: order - offer - points
+  rewards: number;
+  paymentMethod: string;
+  transactionId: string; // 32 hex chars
+}
+
+function paymentRow(label: string, value: string, bold = false): string {
+  const style = bold ? ' style="margin: 0px; font-weight: bold"' : "";
+  return `
+                <tr>
+                  <td class="txn-label"><p class="paysummary"${style}>${label}</p></td>
+                  <td class="txn-val"><p class="paysummary"${style}>${value}</p></td>
+                </tr>`;
+}
+
+/** Modeled on the GrabPay "You've made a payment to <Merchant> 🎉" template.
+ * Note there's no date anywhere in the body — it comes from the message time. */
+function paymentReceiptHtml(opts: PaymentReceiptOptions): string {
+  return `
+<table width="600" align="center" style="border-spacing:0">
+  <tr>
+    <td class="head-table2-illustration">
+      <div class="head-table1-para">You've made a payment to ${opts.merchant} 🎉</div>
+    </td>
+  </tr>
+  <tr><td class="td-outline"><p class="payment-summary-para">Payment summary</p></td></tr>
+  <tr>
+    <td class="td-outline">
+      <table style="display: table;width: 100%;">
+        <tbody>${paymentRow("Order amount", `RM${opts.orderAmount}`)}${paymentRow("Offer applied", `-RM${opts.offer}`)}${paymentRow("Points used", `-RM${opts.pointsUsed} <br />(${opts.points} points)`)}${paymentRow("Total", `RM${opts.total}`, true)}
+                <td><hr /></td><td><hr /></td>${paymentRow("Rewards", `${opts.rewards} points`)}${paymentRow("Payment to", opts.merchant)}${paymentRow("Payment method", opts.paymentMethod)}${paymentRow("Transaction ID", opts.transactionId)}
+        </tbody>
+      </table>
+    </td>
+  </tr>
+</table>`;
+}
+
 const GRAB_SENDER_HEADER = "GrabExpress <no-reply@grab.com>";
 const GRAB_ERECEIPT_SENDER_HEADER = "Grab <no-reply@grab.com>";
 
@@ -512,6 +556,65 @@ export const demoFixtures: DemoFixtureMessage[] = [
       dropoff: "Menara Demo, Jalan Ampang",
       dropoffTime: "8:31AM",
       tripSummary: "4.20 km • 16 mins",
+    }),
+  },
+  // GrabPay in-store QR payment
+  {
+    messageId: "demo-msg-011",
+    date: "2026-07-12",
+    category: "payment",
+    fromHeader: GRAB_ERECEIPT_SENDER_HEADER,
+    subject: "You've made a payment to Demo Kopi Bar 🎉",
+    html: paymentReceiptHtml({
+      merchant: "Demo Kopi Bar",
+      orderAmount: "8.50",
+      offer: "0.00",
+      pointsUsed: "0.00",
+      points: 0,
+      total: "8.50",
+      rewards: 8,
+      paymentMethod: "GrabPay Wallet",
+      transactionId: "d3e0a1b2c3d4e5f60718293a4b5c6d7e",
+    }),
+  },
+  // GrabPay with an offer and points applied: Total (RM38.80), not Order
+  // amount (RM45.00), is what gets exported.
+  {
+    messageId: "demo-msg-012",
+    date: "2026-06-14",
+    category: "payment",
+    fromHeader: GRAB_ERECEIPT_SENDER_HEADER,
+    subject: "You've made a payment to Sample Mart Online 🎉",
+    html: paymentReceiptHtml({
+      merchant: "Sample Mart Online",
+      orderAmount: "45.00",
+      offer: "5.00",
+      pointsUsed: "1.20",
+      points: 120,
+      total: "38.80",
+      rewards: 38,
+      paymentMethod: "GrabPay Wallet",
+      transactionId: "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+    }),
+  },
+  // GrabPay online checkout — large enough that the demo total passes RM200,
+  // so the RM200 spend-limit preset visibly cuts the list.
+  {
+    messageId: "demo-msg-013",
+    date: "2026-07-19",
+    category: "payment",
+    fromHeader: GRAB_ERECEIPT_SENDER_HEADER,
+    subject: "You've made a payment to Demo Games Store 🎉",
+    html: paymentReceiptHtml({
+      merchant: "Demo Games Store",
+      orderAmount: "120.00",
+      offer: "0.00",
+      pointsUsed: "0.00",
+      points: 0,
+      total: "120.00",
+      rewards: 120,
+      paymentMethod: "PayLater",
+      transactionId: "aa11bb22cc33dd44ee55ff6600778899",
     }),
   },
 ];

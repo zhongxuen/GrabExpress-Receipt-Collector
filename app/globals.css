@@ -65,6 +65,7 @@
   --destructive: 0 72% 51%;
   --destructive-foreground: 0 0% 100%;
   --radius: 0.75rem;
+  color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -84,6 +85,9 @@
     --accent-foreground: 147 60% 75%;
     --destructive: 0 62% 55%;
     --destructive-foreground: 0 0% 100%;
+    /* Native controls (the date input's calendar icon and popup, scrollbars)
+       otherwise stay light-themed: a dark icon on the dark input. */
+    color-scheme: dark;
   }
 }
 

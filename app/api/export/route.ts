@@ -1,11 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { buildGmailQuery, describeDateRange, parseServices, type ExportRequestBody } from "@/lib/dateFilters";
+import {
+  buildGmailQuery,
+  describeDateRange,
+  isWithinQueryRange,
+  parseServices,
+  type ExportRequestBody,
+} from "@/lib/dateFilters";
 import { searchMessages, fetchMessageContent, getAuthenticatedEmail } from "@/lib/gmailClient";
 import { parseGrabReceipt, ReceiptParseError } from "@/lib/receiptParser";
 import { buildReceiptWorkbook, countByService } from "@/lib/exporter";
 import { mapWithConcurrency } from "@/lib/concurrency";
+import { manualEntriesToReceipts, parseManualEntries } from "@/lib/manualEntries";
 import {
   applySpendLimit,
   canStopFetching,
@@ -42,7 +49,12 @@ async function processMessage(accessToken: string, messageId: string): Promise<M
     if (!content.html) {
       return { kind: "skipped", skipped: { messageId, reason: "No HTML body found in message" }, receivedAt };
     }
-    const receipt = parseGrabReceipt(content.html, messageId, content.fromHeader, content.subject);
+    const receipt = parseGrabReceipt(content.html, messageId, {
+      fromHeader: content.fromHeader,
+      subject: content.subject,
+      receivedAt: content.receivedAt,
+      dateHeader: content.dateHeader,
+    });
     return { kind: "receipt", receipt, receivedAt };
   } catch (err) {
     const reason =
@@ -104,9 +116,18 @@ export async function POST(req: NextRequest) {
   let query: string;
   let filenameLabel: string;
   let spendLimit: number | undefined;
+  let manualReceipts: DatedReceipt[];
   try {
-    ({ query, filenameLabel } = buildGmailQuery(body, new Date(), parseServices(body.services)));
+    const services = parseServices(body.services);
+    ({ query, filenameLabel } = buildGmailQuery(body, new Date(), services));
     spendLimit = parseSpendLimit(body.spendLimit);
+    // Manual entries skip the Gmail search, so apply its date range and the
+    // GrabPay service filter here. Midday Malaysian time stands in for the
+    // arrival time used to order same-day receipts under a spend limit.
+    const includePayments = !services?.length || services.includes("payment");
+    manualReceipts = manualEntriesToReceipts(parseManualEntries(body.manualEntries))
+      .filter((receipt) => includePayments && isWithinQueryRange(receipt.date, query))
+      .map((receipt) => ({ receipt, receivedAt: Date.parse(`${receipt.date}T12:00:00+08:00`) }));
   } catch (err) {
     const message = err instanceof Error ? err.message : "Invalid date range";
     return NextResponse.json({ error: message }, { status: 400 });
@@ -143,7 +164,7 @@ export async function POST(req: NextRequest) {
       outcomes.push(
         ...(await mapWithConcurrency(batch, FETCH_CONCURRENCY, ({ messageId }) => processMessage(accessToken, messageId)))
       );
-      const partial = applySpendLimit(collectOutcomes(outcomes).receipts, spendLimit);
+      const partial = applySpendLimit([...collectOutcomes(outcomes).receipts, ...manualReceipts], spendLimit);
       const arrivals = outcomes.map((o) => o.receivedAt).filter((t): t is number => t !== undefined);
       const oldestReceivedAt = arrivals.length ? Math.min(...arrivals) : undefined;
       if (canStopFetching(partial, oldestReceivedAt)) break;
@@ -153,14 +174,16 @@ export async function POST(req: NextRequest) {
 
   const collected = collectOutcomes(outcomes);
   const skipped = collected.skipped;
-  const limitResult = spendLimit !== undefined ? applySpendLimit(collected.receipts, spendLimit) : undefined;
-  const receipts: Receipt[] = limitResult ? limitResult.kept : collected.receipts.map((r) => r.receipt);
+  const allReceipts = [...collected.receipts, ...manualReceipts];
+  const limitResult = spendLimit !== undefined ? applySpendLimit(allReceipts, spendLimit) : undefined;
+  const receipts: Receipt[] = limitResult ? limitResult.kept : allReceipts.map((r) => r.receipt);
   const spendLimitSummary =
     spendLimit !== undefined && limitResult ? summarizeSpendLimit(spendLimit, limitResult) : undefined;
 
   const forwardedCount = receipts.filter((r) => r.source === "Forwarded").length;
+  const manualCount = receipts.filter((r) => r.source === "Manual").length;
   console.log(
-    `[export] Parsed ${receipts.length} receipt(s) (${forwardedCount} forwarded), skipped ${skipped.length}`
+    `[export] Exporting ${receipts.length} receipt(s) (${forwardedCount} forwarded, ${manualCount} manual), skipped ${skipped.length}`
   );
 
   const buffer = await buildReceiptWorkbook(receipts, {
@@ -177,6 +200,7 @@ export async function POST(req: NextRequest) {
     byService: countByService(receipts),
     skipped,
     spendLimit: spendLimitSummary,
+    manual: manualCount,
   };
 
   return new NextResponse(new Uint8Array(buffer), {

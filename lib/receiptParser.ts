@@ -9,13 +9,25 @@ export class ReceiptParseError extends Error {
   }
 }
 
-export interface ReceiptParser {
+/** What's known about a message besides its HTML body. */
+export interface ReceiptContext {
   /**
-   * `fromHeader` is the outer Gmail message's "From" header, when available.
-   * It's the primary signal for Original vs. Forwarded — the in-body forward
-   * marker (if any) is only used as a fallback when the header is missing.
+   * The outer Gmail message's "From" header, when available. It's the
+   * primary signal for Original vs. Forwarded — the in-body forward marker
+   * (if any) is only used as a fallback when the header is missing.
    */
-  parse(html: string, messageId: string, fromHeader?: string | null): Receipt;
+  fromHeader?: string | null;
+  /** "Subject" header — only used to pick a parser (see getParserFor). */
+  subject?: string | null;
+  /** When the message reached the mailbox (epoch ms, Gmail `internalDate`).
+   * Only GrabPay payments use it: their body carries no date. */
+  receivedAt?: number;
+  /** "Date" header — fallback for `receivedAt`. */
+  dateHeader?: string | null;
+}
+
+export interface ReceiptParser {
+  parse(html: string, messageId: string, context?: ReceiptContext): Receipt;
 }
 
 function isElement(node: AnyNode): node is Element {
@@ -88,11 +100,22 @@ const FORWARD_HEADER_FIELD_RE = /^(from|date|subject|to|sent|cc)\s*:/i;
  * positions, so it tolerates minor layout drift in the source HTML.
  */
 abstract class BaseGrabReceiptParser implements ReceiptParser {
-  abstract parse(html: string, messageId: string, fromHeader?: string | null): Receipt;
+  abstract parse(html: string, messageId: string, context?: ReceiptContext): Receipt;
 
-  protected load(html: string): { $: cheerio.CheerioAPI; text: string; hasForwardMarker: boolean } {
+  protected load(html: string): {
+    $: cheerio.CheerioAPI;
+    text: string;
+    hasForwardMarker: boolean;
+    /** The stripped forward header's "Date:" value, e.g. "Mon, 20 Jul 2026, 11:05 am". */
+    forwardedDate: string | null;
+  } {
     const $ = cheerio.load(html);
-    const hasForwardMarker = this.stripForwardedHeader($);
+    const forwardHeader = this.stripForwardedHeader($);
+    const hasForwardMarker = forwardHeader !== null;
+    const forwardedDate =
+      forwardHeader
+        ?.map((line) => /^(?:date|sent)\s*:\s*(.+)$/i.exec(line)?.[1])
+        .find((value): value is string => Boolean(value)) ?? null;
     // Text nodes are joined with a space rather than via `$.root().text()`,
     // which concatenates adjacent block elements with no separator (e.g.
     // "<div>Booking ID: A-8VSM8JHGW3KHAV</div><div>Total Paid</div>" becomes
@@ -103,7 +126,7 @@ abstract class BaseGrabReceiptParser implements ReceiptParser {
       .join(" ")
       .replace(/\s+/g, " ")
       .trim();
-    return { $, text, hasForwardMarker };
+    return { $, text, hasForwardMarker, forwardedDate };
   }
 
   /**
@@ -124,15 +147,19 @@ abstract class BaseGrabReceiptParser implements ReceiptParser {
    * <span>email</span>"). Judging each node in isolation would see the
    * `<strong>`/`<span>` value nodes as "not a header field" and stop before
    * the header (including its own Date line) was fully removed.
+   *
+   * Returns the removed header field lines (e.g. "Date: Mon, 20 Jul 2026"),
+   * or null if there was no forward marker.
    */
-  private stripForwardedHeader($: cheerio.CheerioAPI): boolean {
+  private stripForwardedHeader($: cheerio.CheerioAPI): string[] | null {
     const root = $.root().get(0);
-    if (!root) return false;
+    if (!root) return null;
 
     const markerNode = findTextNode((root.children ?? []) as AnyNode[], FORWARD_HEADER_RE);
-    if (!markerNode) return false;
+    if (!markerNode) return null;
 
     const toRemove: AnyNode[] = [markerNode];
+    const headerLines: string[] = [];
     let current: AnyNode | null = markerNode.next;
     let lineNodes: AnyNode[] = [];
     let lineText = "";
@@ -141,6 +168,7 @@ abstract class BaseGrabReceiptParser implements ReceiptParser {
       if (isElement(current) && current.name === "br") {
         const trimmed = lineText.trim();
         if (trimmed && !FORWARD_HEADER_FIELD_RE.test(trimmed)) break;
+        if (trimmed) headerLines.push(trimmed.replace(/\s+/g, " "));
         toRemove.push(...lineNodes, current);
         lineNodes = [];
         lineText = "";
@@ -158,11 +186,12 @@ abstract class BaseGrabReceiptParser implements ReceiptParser {
     // blank — never assume it's safe just because it's the last sibling.
     const trailingTrimmed = lineText.trim();
     if (!trailingTrimmed || FORWARD_HEADER_FIELD_RE.test(trailingTrimmed)) {
+      if (trailingTrimmed) headerLines.push(trailingTrimmed.replace(/\s+/g, " "));
       toRemove.push(...lineNodes);
     }
 
     $(toRemove).remove();
-    return true;
+    return headerLines;
   }
 
   protected findValueNearLabel(
@@ -373,7 +402,7 @@ export class GrabExpressReceiptParser extends BaseGrabReceiptParser {
   private static readonly AMOUNT_LABEL = /total(?:\s*(?:paid|amount|fare))?/i;
   private static readonly DATE_LABEL = /\bdate\b/i;
 
-  parse(html: string, messageId: string, fromHeader?: string | null): Receipt {
+  parse(html: string, messageId: string, { fromHeader }: ReceiptContext = {}): Receipt {
     const { $, text, hasForwardMarker } = this.load(html);
 
     const receiptNo = this.extractBookingCode($, text);
@@ -443,7 +472,7 @@ export class GrabFoodReceiptParser extends BaseGrabReceiptParser {
   private static readonly ORDER_TYPE_LABEL = /^\s*type\s*of\s*order\s*:?\s*$/i;
   private static readonly MERCHANT_LABELS = [/^\s*order\s*location\s*:?\s*$/i, /^\s*restaurant\s*:?\s*$/i];
 
-  parse(html: string, messageId: string, fromHeader?: string | null): Receipt {
+  parse(html: string, messageId: string, { fromHeader }: ReceiptContext = {}): Receipt {
     const { $, text, hasForwardMarker } = this.load(html);
 
     const receiptNo = this.extractReceiptNo($, text);
@@ -536,7 +565,7 @@ export class GrabTransportReceiptParser extends BaseGrabReceiptParser {
   private static readonly PICKUP_ICON_RE = /^pick-?\s*up$/i;
   private static readonly DROPOFF_ICON_RE = /^drop-?\s*off$/i;
 
-  parse(html: string, messageId: string, fromHeader?: string | null): Receipt {
+  parse(html: string, messageId: string, { fromHeader }: ReceiptContext = {}): Receipt {
     const { $, text, hasForwardMarker } = this.load(html);
 
     const receiptNo = this.extractBookingId($, text);
@@ -651,8 +680,107 @@ export class GrabTransportReceiptParser extends BaseGrabReceiptParser {
   }
 }
 
+// GrabPay transaction IDs are 32 lowercase hex chars, e.g.
+// "9758d41c2b7f40dda45b4496c6a4f887".
+const TRANSACTION_ID_RE = /\b[0-9a-f]{32}\b/i;
+// "You've made a payment to <Merchant> 🎉" — headline and subject alike.
+const PAYMENT_HEADLINE_RE = /made\s+a\s+payment\s+to\s+(.+?)\s*(?:🎉|$)/i;
+
+/** Gmail timestamps are UTC; Grab receipts are Malaysian, so a 7:30 AM MYT
+ * payment must not land on the previous day on a UTC server (Vercel). */
+const MALAYSIA_DATE_FORMAT = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Kuala_Lumpur",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+function toMalaysiaDate(epochMs: number): string | null {
+  if (!Number.isFinite(epochMs)) return null;
+  return MALAYSIA_DATE_FORMAT.format(new Date(epochMs)); // en-CA => YYYY-MM-DD
+}
+
+/**
+ * Parses GrabPay "You've made a payment to <Merchant> 🎉" emails (the Grab
+ * app's Finance tab: in-store QR and online checkouts). A label/value table:
+ * Order amount, Offer applied, Points used, Total, Payment to, Payment
+ * method, Transaction ID. See md files/grabpay-payments-plan.md.
+ *
+ * The body has no date — the email is sent at the moment of payment, so the
+ * message timestamp is the payment date. Labels are anchored because the
+ * headline itself contains "payment to".
+ */
+export class GrabPayPaymentReceiptParser extends BaseGrabReceiptParser {
+  private static readonly TRANSACTION_ID_LABEL = /^\s*transaction\s*id\s*:?\s*$/i;
+  // "Total" is what was actually paid after offers/points — not "Order amount".
+  private static readonly AMOUNT_LABEL = /^\s*total\s*:?\s*$/i;
+  private static readonly MERCHANT_LABEL = /^\s*payment\s*to\s*:?\s*$/i;
+
+  parse(html: string, messageId: string, context: ReceiptContext = {}): Receipt {
+    const { $, text, hasForwardMarker, forwardedDate } = this.load(html);
+
+    const receiptNo = this.extractTransactionId($, text);
+    const amount = this.extractAmount($);
+    const date = this.extractDate(context, forwardedDate);
+    const merchant = this.extractMerchant($, text, context.subject);
+    const source = determineSource(context.fromHeader, hasForwardMarker);
+
+    return { date, receiptNo, amount, service: "GrabPay", category: "payment", merchant, source, messageId };
+  }
+
+  private extractTransactionId($: cheerio.CheerioAPI, text: string): string {
+    const value = this.matchNearLabels($, [GrabPayPaymentReceiptParser.TRANSACTION_ID_LABEL], TRANSACTION_ID_RE);
+    if (value) return value.toLowerCase();
+
+    // Whole-text fallback, still anchored on the label.
+    const anchored = /transaction\s*id\s*:?\s*([0-9a-f]{32})\b/i.exec(text);
+    if (anchored) return anchored[1].toLowerCase();
+
+    throw new ReceiptParseError("Transaction ID not found");
+  }
+
+  /** No whole-document fallback: the first RM amount in the body is "Order
+   * amount", which is wrong whenever an offer or points were applied. */
+  private extractAmount($: cheerio.CheerioAPI): number {
+    const value = this.matchNearLabels($, [GrabPayPaymentReceiptParser.AMOUNT_LABEL], AMOUNT_RE);
+    if (value) return parseAmount(value);
+    throw new ReceiptParseError("Amount not found");
+  }
+
+  /**
+   * A forwarded copy arrives at forward time, so the original's "Date:" line
+   * from the forward header wins when present. Otherwise: Gmail's arrival
+   * time, then the Date header, both converted to Malaysian time.
+   */
+  private extractDate(context: ReceiptContext, forwardedDate: string | null): string {
+    const fromForward = forwardedDate ? parseDateCandidate(forwardedDate) : null;
+    if (fromForward) return fromForward;
+
+    const fromArrival = context.receivedAt !== undefined ? toMalaysiaDate(context.receivedAt) : null;
+    if (fromArrival) return fromArrival;
+
+    const fromHeader = context.dateHeader ? toMalaysiaDate(Date.parse(context.dateHeader)) : null;
+    if (fromHeader) return fromHeader;
+
+    throw new ReceiptParseError("Payment date not found");
+  }
+
+  private extractMerchant($: cheerio.CheerioAPI, text: string, subject?: string | null): string | undefined {
+    const value = this.findValueNearLabel($, GrabPayPaymentReceiptParser.MERCHANT_LABEL);
+    if (value) return value.replace(/\s+/g, " ");
+
+    for (const candidate of [subject, text]) {
+      const match = candidate ? PAYMENT_HEADLINE_RE.exec(candidate) : null;
+      if (match?.[1]) return match[1].trim();
+    }
+    return undefined;
+  }
+}
+
 // Body signatures used to pick a parser. Food and rides share the subject
 // "Your Grab E-Receipt", so the body is what actually decides.
+const PAYMENT_SIGNATURE_RE = /you(?:'|’|&#39;|&#x27;|&rsquo;)?ve\s+made\s+a\s+payment\s+to/i;
+const TRANSACTION_ID_LABEL_RE = /transaction\s*id/i;
 const RIDE_SIGNATURE_RE = /enjoyed\s+your\s+ride|booking\s*id\s*:[\s\S]*picked\s*up\s*on/i;
 const FOOD_HEADLINE_RE = /enjoyed\s+your\s+food/i;
 const FOOD_LABEL_RE = /vehicle\s*type\s*:|type\s*of\s*order\s*:/i;
@@ -662,13 +790,24 @@ const EXPRESS_HEADLINE_RE = /your\s+item\s+has\s+been\s+delivered/i;
  * Picks the parser for a Grab receipt email.
  *
  * The subject only narrows the choice: "GrabExpress" goes straight to the
- * GrabExpress parser, while "Grab E-Receipt" covers both food and rides, so
- * the body is sniffed. Forwarded mail still works since a "Fwd:" subject
- * keeps the phrase. Unknown layouts throw, so a new variant (GrabMart,
- * GrabBike, …) shows up in the skipped list instead of being misparsed.
+ * GrabExpress parser and "made a payment to" to the GrabPay parser, while
+ * "Grab E-Receipt" covers both food and rides, so the body is sniffed.
+ * Forwarded mail still works since a "Fwd:" subject keeps the phrase.
+ * Unknown layouts throw, so a new variant (GrabMart, GrabBike, …) shows up
+ * in the skipped list instead of being misparsed.
  */
 export function getParserFor(html: string, subject?: string | null): ReceiptParser {
   const subjectLower = subject?.toLowerCase() ?? "";
+
+  // Checked before the E-Receipt branch. The body check needs the
+  // "Transaction ID" label too, so a food/ride receipt mentioning a payment
+  // can't be routed here.
+  if (
+    subjectLower.includes("made a payment to") ||
+    (PAYMENT_SIGNATURE_RE.test(html) && TRANSACTION_ID_LABEL_RE.test(html))
+  ) {
+    return new GrabPayPaymentReceiptParser();
+  }
 
   if (subjectLower.includes("grabexpress")) {
     return new GrabExpressReceiptParser();
@@ -691,11 +830,6 @@ export function getParserFor(html: string, subject?: string | null): ReceiptPars
   throw new ReceiptParseError("Unrecognised Grab receipt layout");
 }
 
-export function parseGrabReceipt(
-  html: string,
-  messageId: string,
-  fromHeader?: string | null,
-  subject?: string | null
-): Receipt {
-  return getParserFor(html, subject).parse(html, messageId, fromHeader);
+export function parseGrabReceipt(html: string, messageId: string, context: ReceiptContext = {}): Receipt {
+  return getParserFor(html, context.subject).parse(html, messageId, context);
 }
